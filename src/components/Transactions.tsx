@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { ArrowLeft, Edit2, ArrowRight, Trash2 } from 'lucide-react'
+import { ArrowLeft, Edit2, ArrowRight, Trash2, Settings } from 'lucide-react'
 import { supabase, type Transaction, type Category } from '../lib/supabase'
 import { formatCurrency, formatDate, cn } from '../lib/utils'
 import TransactionForm from './TransactionForm'

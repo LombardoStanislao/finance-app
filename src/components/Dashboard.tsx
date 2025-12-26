@@ -17,7 +17,7 @@ interface DashboardProps {
   onAddTransaction: () => void
 }
 
-export default function Dashboard({ primaryColor, profileUpdated, onAddTransaction, onOpenSettings }: DashboardProps) {
+export default function Dashboard({ primaryColor, profileUpdated, onAddTransaction, onOpenSettings, onOpenInvestments }: DashboardProps) {
   const [netWorth, setNetWorth] = useState<number>(0)
   const [liquidity, setLiquidity] = useState<number>(0)
   const [investmentsTotal, setInvestmentsTotal] = useState<number>(0)
@@ -85,9 +85,11 @@ export default function Dashboard({ primaryColor, profileUpdated, onAddTransacti
             totalIncome += amount
           } else if (transaction.type === 'expense') {
             totalExpenses += amount
-          } else if (transaction.type === 'transfer' && !transaction.bucket_id) {
-            // Only count transfers from unassigned liquidity (bucket_id is NULL)
-            // Transfers are negative amounts, so they reduce liquidity
+          } else if (transaction.type === 'transfer') {
+            // ALL transfers reduce liquidity (money leaving unassigned liquidity)
+            // Transfers TO buckets (bucket_id is NOT NULL) reduce liquidity
+            // Transfers TO investments (investment_id is NOT NULL) also reduce liquidity
+            // Transfers are negative amounts, so adding them reduces liquidity
             totalTransfersFromUnassigned += amount
           }
         })
@@ -106,19 +108,20 @@ export default function Dashboard({ primaryColor, profileUpdated, onAddTransacti
       const bucketsList = bucketsData || []
       setBuckets(bucketsList)
 
-      // Calculate buckets total
+      // Calculate buckets total (separate from transactions)
       const bucketsTotal = bucketsList.reduce((sum, bucket) => {
         return sum + (bucket.current_balance || 0)
       }, 0)
 
-      // Calculate unassigned liquidity
-      // Includes: Income - Expenses - Transfers from unassigned (transfers are negative, so adding them reduces liquidity)
-      // This represents money that hasn't been assigned to buckets
-      const unassignedLiquidity = totalIncome - totalExpenses - bucketsTotal + totalTransfersFromUnassigned
-
-      // Liquidity = Unassigned + Buckets
-      const calculatedLiquidity = unassignedLiquidity + bucketsTotal
-      setLiquidity(calculatedLiquidity)
+      // Calculate transaction-based liquidity ONLY
+      // IMPORTANT: Include 'initial' type in liquidity calculation
+      const initialLiquidityAmount = transactions
+        .filter(t => t.type === 'initial')
+        .reduce((sum, t) => sum + (Number(t.amount) || 0), 0)
+      // Liquidity = Initial + Income - Expenses - Transfers from unassigned
+      // This is ONLY cash from transactions, NOT including buckets
+      const transactionBasedLiquidity = initialLiquidityAmount + totalIncome - totalExpenses + totalTransfersFromUnassigned
+      setLiquidity(transactionBasedLiquidity)
 
       // Fetch investments
       const { data: investmentsData, error: investmentsError } = await supabase
@@ -136,8 +139,8 @@ export default function Dashboard({ primaryColor, profileUpdated, onAddTransacti
       }, 0)
       setInvestmentsTotal(investmentsSum)
 
-      // Net Worth = Liquidity + Investments
-      const calculatedNetWorth = calculatedLiquidity + investmentsSum
+      // Net Worth = Transaction-Based Liquidity + Buckets Total + Investments Total
+      const calculatedNetWorth = transactionBasedLiquidity + bucketsTotal + investmentsSum
       setNetWorth(calculatedNetWorth)
 
       // Get current month start and end dates
@@ -350,7 +353,10 @@ export default function Dashboard({ primaryColor, profileUpdated, onAddTransacti
             </p>
           </div>
 
-          <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-200">
+          <button
+            onClick={onOpenInvestments}
+            className="bg-white rounded-2xl p-4 shadow-sm border border-gray-200 hover:shadow-md transition-shadow text-left"
+          >
             <div className="flex items-center gap-2 mb-2">
               <TrendingUpIcon className="w-4 h-4 text-indigo-600" />
               <p className="text-xs text-gray-500">Investimenti</p>
@@ -358,7 +364,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onAddTransacti
             <p className="text-xl font-semibold text-indigo-600">
               {formatCurrency(investmentsTotal)}
             </p>
-          </div>
+          </button>
         </div>
 
         {/* Income vs Expenses */}

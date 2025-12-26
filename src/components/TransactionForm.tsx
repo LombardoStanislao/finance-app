@@ -336,7 +336,7 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
       }
       // Handle INCOME with auto-split
       else if (type === 'income' && applyAutoSplit) {
-        // Insert transaction (bucket_id is NULL for income)
+        // Step 1: Insert the main income transaction (full amount)
         const { error: transactionError } = await supabase
           .from('transactions')
           .insert({
@@ -353,14 +353,34 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
 
         if (transactionError) throw transactionError
 
-        // Get buckets with distribution_percentage > 0
+        // Step 2: Get buckets with distribution_percentage > 0
         const bucketsWithDistribution = buckets.filter(b => (b.distribution_percentage || 0) > 0)
 
-        // Distribute income to buckets
+        // Step 3: For each bucket, create a transfer transaction and update bucket balance
+        // This prevents double counting: Income adds to liquidity, transfers reduce liquidity and add to bucket
         for (const bucket of bucketsWithDistribution) {
           const distributionAmount = (amountNumber * (bucket.distribution_percentage || 0)) / 100
-          const newBalance = (bucket.current_balance || 0) + distributionAmount
+          
+          // Create a transfer transaction from unassigned liquidity to bucket (negative amount)
+          const { error: transferError } = await supabase
+            .from('transactions')
+            .insert({
+              amount: -distributionAmount, // Negative because it's leaving liquidity
+              category_id: null,
+              date: new Date(date).toISOString(),
+              description: `Distribuzione automatica a ${bucket.name}`,
+              is_work_related: false,
+              is_recurring: false,
+              type: 'transfer',
+              bucket_id: bucket.id, // Destination bucket
+              investment_id: null,
+              user_id: user.id,
+            })
 
+          if (transferError) throw transferError
+
+          // Update bucket balance
+          const newBalance = (bucket.current_balance || 0) + distributionAmount
           const { error: bucketError } = await supabase
             .from('buckets')
             .update({ current_balance: newBalance })

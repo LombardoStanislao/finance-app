@@ -7,11 +7,12 @@ import Settings from './components/Settings'
 import Transactions from './components/Transactions'
 import BucketsPage from './components/BucketsPage'
 import Statistics from './components/Statistics'
+import InvestmentsPage from './components/InvestmentsPage'
 import BottomNav from './components/BottomNav'
 import TransactionForm from './components/TransactionForm'
 import './App.css'
 
-type View = 'dashboard' | 'settings' | 'transactions' | 'buckets' | 'statistics'
+type View = 'dashboard' | 'settings' | 'transactions' | 'buckets' | 'statistics' | 'investments'
 
 function App() {
   const [session, setSession] = useState<Session | null>(null)
@@ -109,12 +110,20 @@ function App() {
             primaryColor={primaryColor}
           />
         )}
+        {currentView === 'investments' && (
+          <InvestmentsPage
+            onBack={() => setCurrentView('dashboard')}
+            onOpenSettings={() => setCurrentView('settings')}
+            primaryColor={primaryColor}
+          />
+        )}
         {currentView === 'dashboard' && (
           <Dashboard
             primaryColor={primaryColor}
             profileUpdated={profileUpdated}
             onAddTransaction={handleAddTransaction}
             onOpenSettings={() => setCurrentView('settings')}
+            onOpenInvestments={() => setCurrentView('investments')}
           />
         )}
       </main>

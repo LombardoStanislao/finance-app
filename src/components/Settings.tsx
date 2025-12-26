@@ -16,6 +16,7 @@ interface CategoryWithChildren extends Category {
 
 export default function Settings({ onBack, onProfileUpdate, primaryColor, onColorChange }: SettingsProps) {
   const [displayName, setDisplayName] = useState('')
+  const [initialLiquidity, setInitialLiquidity] = useState<string>('')
   const [loading, setLoading] = useState(false)
   const [profileError, setProfileError] = useState<string | null>(null)
   const [profileSuccess, setProfileSuccess] = useState(false)
@@ -95,8 +96,22 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
 
   async function loadUserProfile() {
     const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+
     if (user?.user_metadata?.display_name) {
       setDisplayName(user.user_metadata.display_name)
+    }
+
+    // Load initial liquidity transaction
+    const { data: initialTransaction } = await supabase
+      .from('transactions')
+      .select('amount')
+      .eq('user_id', user.id)
+      .eq('type', 'initial')
+      .single()
+
+    if (initialTransaction) {
+      setInitialLiquidity(Math.abs(initialTransaction.amount).toString())
     }
   }
 
@@ -208,11 +223,54 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     setProfileSuccess(false)
 
     try {
+      const { data: { user }, error: userError } = await supabase.auth.getUser()
+      if (userError) throw userError
+      if (!user) throw new Error('Utente non autenticato')
+
+      // Update display name
       const { error } = await supabase.auth.updateUser({
         data: { display_name: displayName }
       })
 
       if (error) throw error
+
+      // Handle initial liquidity
+      const liquidityAmount = parseFloat(initialLiquidity) || 0
+      
+      // Find or create initial transaction
+      const { data: existingInitial } = await supabase
+        .from('transactions')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('type', 'initial')
+        .single()
+
+      if (existingInitial) {
+        // Update existing initial transaction
+        await supabase
+          .from('transactions')
+          .update({
+            amount: liquidityAmount,
+            date: new Date().toISOString(),
+          })
+          .eq('id', existingInitial.id)
+      } else if (liquidityAmount > 0) {
+        // Create new initial transaction
+        await supabase
+          .from('transactions')
+          .insert({
+            amount: liquidityAmount,
+            type: 'initial',
+            category_id: null,
+            date: new Date().toISOString(),
+            description: 'Liquidità iniziale',
+            is_work_related: false,
+            is_recurring: false,
+            bucket_id: null,
+            investment_id: null,
+            user_id: user.id,
+          })
+      }
 
       setProfileSuccess(true)
       onProfileUpdate()
@@ -623,6 +681,23 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
                 className="w-full border border-gray-300 px-4 py-3 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
                 placeholder="Il tuo nome"
               />
+            </div>
+
+            <div>
+              <label htmlFor="initialLiquidity" className="block text-sm font-medium text-gray-700 mb-1">
+                Liquidità Iniziale (Non Assegnata)
+              </label>
+              <input
+                id="initialLiquidity"
+                type="number"
+                step="0.01"
+                min="0"
+                value={initialLiquidity}
+                onChange={(e) => setInitialLiquidity(e.target.value)}
+                className="w-full border border-gray-300 px-4 py-3 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                placeholder="0.00"
+              />
+              <p className="text-xs text-gray-500 mt-1">Liquidità che avevi all'inizio (non conta come entrata mensile)</p>
             </div>
 
             {profileError && (

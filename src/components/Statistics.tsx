@@ -140,6 +140,7 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
       }
 
       // Fetch all transactions in range
+      // IMPORTANT: Include 'initial' type for net worth calculation
       const { data: transactions, error } = await supabase
         .from('transactions')
         .select('amount, type, date')
@@ -182,10 +183,16 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
         dateMap.set(date, current)
       })
 
+      // Calculate initial liquidity (from 'initial' type transactions)
+      const initialLiquidity = transactions
+        ?.filter(t => t.type === 'initial')
+        .reduce((sum, t) => sum + (Number(t.amount) || 0), 0) || 0
+
       // Convert to array and calculate running balance
       const sortedDates = Array.from(dateMap.entries()).sort((a, b) => a[0].localeCompare(b[0]))
       
-      let runningBalance = 0
+      // Start with initial liquidity
+      let runningBalance = initialLiquidity
       const netWorthPoints: NetWorthDataPoint[] = []
 
       sortedDates.forEach(([date, { income, expenses }]) => {

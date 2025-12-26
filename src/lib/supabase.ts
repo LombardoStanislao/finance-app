@@ -19,7 +19,7 @@ export interface Transaction {
   description: string | null
   is_work_related: boolean
   is_recurring: boolean
-  type: 'income' | 'expense' | 'transfer'
+  type: 'income' | 'expense' | 'transfer' | 'initial'
   bucket_id: string | null
   investment_id: string | null
   created_at: string
@@ -49,6 +49,7 @@ export interface Bucket {
 export interface Investment {
   id: string
   user_id: string
+  name: string | null
   type: 'ETF' | 'Obbligazioni' | 'Azioni' | 'Conto Deposito' | 'Crypto' | 'Altro'
   current_value: number
   last_updated: string

@@ -14,9 +14,11 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
   const [loading, setLoading] = useState(true)
   const [newBucketName, setNewBucketName] = useState('')
   const [newBucketDistribution, setNewBucketDistribution] = useState<string>('')
+  const [newBucketBalance, setNewBucketBalance] = useState<string>('')
   const [editingBucket, setEditingBucket] = useState<Bucket | null>(null)
   const [editBucketName, setEditBucketName] = useState('')
   const [editBucketDistribution, setEditBucketDistribution] = useState<string>('')
+  const [editBucketBalance, setEditBucketBalance] = useState<string>('')
   const [bucketLoading, setBucketLoading] = useState(false)
   const [bucketError, setBucketError] = useState<string | null>(null)
   const [isAddFormOpen, setIsAddFormOpen] = useState(false)
@@ -60,7 +62,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
         .insert({
           name: newBucketName,
           distribution_percentage: newBucketDistribution ? parseFloat(newBucketDistribution) : 0,
-          current_balance: 0,
+          current_balance: newBucketBalance ? parseFloat(newBucketBalance) : 0,
           user_id: user.id,
         })
 
@@ -68,6 +70,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
 
       setNewBucketName('')
       setNewBucketDistribution('')
+      setNewBucketBalance('')
       setIsAddFormOpen(false)
       loadBuckets()
     } catch (error: any) {
@@ -90,6 +93,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
         .update({
           name: editBucketName,
           distribution_percentage: editBucketDistribution ? parseFloat(editBucketDistribution) : 0,
+          current_balance: editBucketBalance ? parseFloat(editBucketBalance) : 0,
         })
         .eq('id', editingBucket.id)
 
@@ -98,6 +102,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
       setEditingBucket(null)
       setEditBucketName('')
       setEditBucketDistribution('')
+      setEditBucketBalance('')
       loadBuckets()
     } catch (error: any) {
       setBucketError(error.message || 'Errore durante l\'aggiornamento')
@@ -213,6 +218,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                         setEditingBucket(bucket)
                         setEditBucketName(bucket.name)
                         setEditBucketDistribution((bucket.distribution_percentage || 0).toString())
+                        setEditBucketBalance((bucket.current_balance || 0).toString())
                       }}
                       className="p-1.5 hover:bg-gray-200 rounded transition-colors"
                       aria-label="Modifica"
@@ -302,6 +308,23 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                 <p className="text-xs text-gray-500 mt-1">Percentuale di entrate da distribuire automaticamente</p>
               </div>
 
+              <div>
+                <label htmlFor="bucketBalance" className="block text-sm font-medium text-gray-700 mb-1">
+                  Saldo Attuale
+                </label>
+                <input
+                  id="bucketBalance"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={newBucketBalance}
+                  onChange={(e) => setNewBucketBalance(e.target.value)}
+                  className="w-full border border-gray-300 px-4 py-3 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                  placeholder="0.00"
+                />
+                <p className="text-xs text-gray-500 mt-1">Saldo iniziale del bucket (non crea una transazione)</p>
+              </div>
+
               <div className="flex gap-3 pt-4">
                 <button
                   type="button"
@@ -309,6 +332,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                     setIsAddFormOpen(false)
                     setNewBucketName('')
                     setNewBucketDistribution('')
+                    setNewBucketBalance('')
                     setBucketError(null)
                   }}
                   className="flex-1 border border-gray-300 text-gray-700 py-3 rounded-lg font-medium hover:bg-gray-50 transition-colors"
@@ -340,6 +364,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                   setEditingBucket(null)
                   setEditBucketName('')
                   setEditBucketDistribution('')
+                  setEditBucketBalance('')
                 }}
                 className="p-2 hover:bg-gray-100 rounded-full transition-colors"
               >
@@ -382,6 +407,22 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                   onChange={(e) => setEditBucketDistribution(e.target.value)}
                   className="w-full border border-gray-300 px-4 py-3 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
                 />
+              </div>
+
+              <div>
+                <label htmlFor="editBucketBalance" className="block text-sm font-medium text-gray-700 mb-1">
+                  Saldo Attuale
+                </label>
+                <input
+                  id="editBucketBalance"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={editBucketBalance}
+                  onChange={(e) => setEditBucketBalance(e.target.value)}
+                  className="w-full border border-gray-300 px-4 py-3 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+                <p className="text-xs text-gray-500 mt-1">Saldo attuale del bucket (non crea una transazione)</p>
               </div>
 
               <div className="flex gap-3 pt-4">

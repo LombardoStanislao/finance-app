@@ -133,7 +133,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
 
   return (
     <div className="min-h-screen bg-gray-50 pb-24">
-      {/* HEADER STICKY CORRETTO */}
+      {/* HEADER STICKY */}
       <div className="bg-white sticky top-0 z-20 border-b border-gray-100 shadow-sm px-4 py-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
             <button 
@@ -253,124 +253,142 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
         </button>
       </div>
 
-      {/* MODALE AGGIUNTA */}
+      {/* MODALE AGGIUNTA (Fixed & Centered & High Z-Index) */}
       {isAddFormOpen && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-4 backdrop-blur-sm animate-in fade-in" onClick={() => setIsAddFormOpen(false)}>
-          <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl animate-in slide-in-from-bottom-10" onClick={e => e.stopPropagation()}>
-            <div className="flex justify-between items-center mb-6">
+        <div 
+            className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in" 
+            onClick={() => setIsAddFormOpen(false)}
+        >
+          <div 
+            className="bg-white w-full max-w-md rounded-3xl max-h-[85vh] flex flex-col shadow-2xl animate-in zoom-in-95 duration-200" 
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Header Sticky nel Modale */}
+            <div className="shrink-0 border-b border-gray-100 px-6 py-4 flex items-center justify-between">
                <h3 className="text-lg font-bold text-gray-900">Nuovo Bucket</h3>
-               <button onClick={() => setIsAddFormOpen(false)} className="p-1 bg-gray-100 rounded-full"><X className="w-5 h-5 text-gray-500" /></button>
+               <button onClick={() => setIsAddFormOpen(false)} className="p-2 bg-gray-100 hover:bg-gray-200 rounded-full transition-colors"><X className="w-5 h-5 text-gray-500" /></button>
             </div>
             
-            <form onSubmit={handleAddBucket} className="space-y-4">
-              <div>
-                <label className="text-xs text-gray-500 font-bold uppercase ml-1">Nome Bucket</label>
-                <input
-                  type="text"
-                  value={newBucketName}
-                  onChange={e => setNewBucketName(e.target.value)}
-                  placeholder="Es. Fondo Emergenza, Vacanze..."
-                  className="w-full mt-1 p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium"
-                  autoFocus
-                />
-              </div>
-              
-              <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-xs text-gray-500 font-bold uppercase ml-1">Auto-Distribuzione (%)</label>
+            {/* Content Scrollable */}
+            <div className="overflow-y-auto p-6">
+                <form onSubmit={handleAddBucket} className="space-y-5">
+                <div>
+                    <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Nome Bucket</label>
                     <input
-                      type="number"
-                      step="0.1"
-                      min="0"
-                      max="100"
-                      value={newBucketDistribution}
-                      onChange={e => setNewBucketDistribution(e.target.value)}
-                      placeholder="0.0"
-                      className="w-full mt-1 p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium"
+                    type="text"
+                    value={newBucketName}
+                    onChange={e => setNewBucketName(e.target.value)}
+                    placeholder="Es. Fondo Emergenza, Vacanze..."
+                    className="w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900"
+                    autoFocus
                     />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-500 font-bold uppercase ml-1">Saldo Attuale (€)</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={newBucketBalance}
-                      onChange={e => setNewBucketBalance(e.target.value)}
-                      placeholder="0.00"
-                      className="w-full mt-1 p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium"
-                    />
-                  </div>
-              </div>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-4">
+                    <div>
+                        <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Auto-Distr. (%)</label>
+                        <input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        max="100"
+                        value={newBucketDistribution}
+                        onChange={e => setNewBucketDistribution(e.target.value)}
+                        placeholder="0.0"
+                        className="w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900"
+                        />
+                    </div>
+                    <div>
+                        <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Saldo (€)</label>
+                        <input
+                        type="number"
+                        step="0.01"
+                        value={newBucketBalance}
+                        onChange={e => setNewBucketBalance(e.target.value)}
+                        placeholder="0.00"
+                        className="w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900"
+                        />
+                    </div>
+                </div>
 
-              <div className="pt-2">
-                <button
-                  type="submit"
-                  disabled={bucketLoading}
-                  className="w-full py-4 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 active:scale-95 transition-all disabled:opacity-50"
-                >
-                  {bucketLoading ? 'Salvataggio...' : 'Crea Bucket'}
-                </button>
-              </div>
-            </form>
+                <div className="pt-2">
+                    <button
+                    type="submit"
+                    disabled={bucketLoading}
+                    className="w-full py-4 bg-blue-600 text-white font-bold rounded-2xl shadow-xl shadow-blue-100 hover:bg-blue-700 active:scale-95 transition-all disabled:opacity-50"
+                    >
+                    {bucketLoading ? 'Salvataggio...' : 'Crea Bucket'}
+                    </button>
+                </div>
+                </form>
+            </div>
           </div>
         </div>
       )}
 
-      {/* MODALE MODIFICA */}
+      {/* MODALE MODIFICA (Fixed & Centered & High Z-Index) */}
       {editingBucket && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-4 backdrop-blur-sm animate-in fade-in" onClick={() => setEditingBucket(null)}>
-          <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl animate-in slide-in-from-bottom-10" onClick={e => e.stopPropagation()}>
-            <div className="flex justify-between items-center mb-6">
+        <div 
+            className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in" 
+            onClick={() => setEditingBucket(null)}
+        >
+          <div 
+            className="bg-white w-full max-w-md rounded-3xl max-h-[85vh] flex flex-col shadow-2xl animate-in zoom-in-95 duration-200" 
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="shrink-0 border-b border-gray-100 px-6 py-4 flex items-center justify-between">
                <h3 className="text-lg font-bold text-gray-900">Modifica Bucket</h3>
-               <button onClick={() => setEditingBucket(null)} className="p-1 bg-gray-100 rounded-full"><X className="w-5 h-5 text-gray-500" /></button>
+               <button onClick={() => setEditingBucket(null)} className="p-2 bg-gray-100 hover:bg-gray-200 rounded-full transition-colors"><X className="w-5 h-5 text-gray-500" /></button>
             </div>
             
-            <form onSubmit={handleUpdateBucket} className="space-y-4">
-              <div>
-                <label className="text-xs text-gray-500 font-bold uppercase ml-1">Nome Bucket</label>
-                <input
-                  type="text"
-                  value={editBucketName}
-                  onChange={e => setEditBucketName(e.target.value)}
-                  className="w-full mt-1 p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-xs text-gray-500 font-bold uppercase ml-1">Auto-Distribuzione (%)</label>
+            <div className="overflow-y-auto p-6">
+                <form onSubmit={handleUpdateBucket} className="space-y-5">
+                <div>
+                    <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Nome Bucket</label>
                     <input
-                      type="number"
-                      step="0.1"
-                      min="0"
-                      max="100"
-                      value={editBucketDistribution}
-                      onChange={e => setEditBucketDistribution(e.target.value)}
-                      className="w-full mt-1 p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium"
+                    type="text"
+                    value={editBucketName}
+                    onChange={e => setEditBucketName(e.target.value)}
+                    className="w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900"
                     />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-500 font-bold uppercase ml-1">Saldo Attuale (€)</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={editBucketBalance}
-                      onChange={e => setEditBucketBalance(e.target.value)}
-                      className="w-full mt-1 p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium"
-                    />
-                  </div>
-              </div>
+                </div>
 
-              <div className="pt-2">
-                <button
-                  type="submit"
-                  disabled={bucketLoading}
-                  className="w-full py-4 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 active:scale-95 transition-all disabled:opacity-50"
-                >
-                  {bucketLoading ? 'Aggiornamento...' : 'Salva Modifiche'}
-                </button>
-              </div>
-            </form>
+                <div className="grid grid-cols-2 gap-4">
+                    <div>
+                        <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Auto-Distr. (%)</label>
+                        <input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        max="100"
+                        value={editBucketDistribution}
+                        onChange={e => setEditBucketDistribution(e.target.value)}
+                        className="w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900"
+                        />
+                    </div>
+                    <div>
+                        <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Saldo (€)</label>
+                        <input
+                        type="number"
+                        step="0.01"
+                        value={editBucketBalance}
+                        onChange={e => setEditBucketBalance(e.target.value)}
+                        className="w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900"
+                        />
+                    </div>
+                </div>
+
+                <div className="pt-2">
+                    <button
+                    type="submit"
+                    disabled={bucketLoading}
+                    className="w-full py-4 bg-blue-600 text-white font-bold rounded-2xl shadow-xl shadow-blue-100 hover:bg-blue-700 active:scale-95 transition-all disabled:opacity-50"
+                    >
+                    {bucketLoading ? 'Aggiornamento...' : 'Salva Modifiche'}
+                    </button>
+                </div>
+                </form>
+            </div>
           </div>
         </div>
       )}

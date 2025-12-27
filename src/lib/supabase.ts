@@ -13,8 +13,9 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 // Database types (adjust based on your actual schema)
 export interface Transaction {
   id: string
+  user_id: string
   amount: number
-  category_id: string
+  category_id: string | null
   date: string
   description: string | null
   is_work_related: boolean
@@ -23,11 +24,12 @@ export interface Transaction {
   bucket_id: string | null
   investment_id: string | null
   created_at: string
-  updated_at: string
+  updated_at?: string
 }
 
 export interface Category {
   id: string
+  user_id: string
   name: string
   budget_limit: number | null
   parent_id: string | null
@@ -37,13 +39,15 @@ export interface Category {
 
 export interface Bucket {
   id: string
+  user_id: string
   name: string
-  allocation_percentage: number
-  current_amount: number
+  allocation_percentage?: number // Mantenuto per compatibilità se usato altrove
+  current_amount?: number // Mantenuto per compatibilità se usato altrove
   current_balance: number
   distribution_percentage: number
+  target_amount?: number // <--- NUOVO CAMPO TARGET
   created_at: string
-  updated_at: string
+  updated_at?: string
 }
 
 export interface Investment {
@@ -54,7 +58,7 @@ export interface Investment {
   current_value: number
   last_updated: string
   created_at: string
-  updated_at: string
+  updated_at?: string
 }
 
 export interface Asset {
@@ -64,4 +68,3 @@ export interface Asset {
   value: number
   updated_at: string
 }
-

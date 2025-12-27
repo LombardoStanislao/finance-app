@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
-import { ArrowLeft, Plus, Trash2, X, Target, PiggyBank, PenLine, Settings } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, X, Target, PiggyBank, PenLine, Settings, CheckCircle2 } from 'lucide-react'
 import { supabase, type Bucket } from '../lib/supabase'
+import { formatCurrency, cn } from '../lib/utils'
 
 interface BucketsPageProps {
   onBack: () => void
@@ -16,12 +17,14 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
   const [newBucketName, setNewBucketName] = useState('')
   const [newBucketDistribution, setNewBucketDistribution] = useState<string>('')
   const [newBucketBalance, setNewBucketBalance] = useState<string>('')
+  const [newBucketTarget, setNewBucketTarget] = useState<string>('')
   
   // States per Edit Form
   const [editingBucket, setEditingBucket] = useState<Bucket | null>(null)
   const [editBucketName, setEditBucketName] = useState('')
   const [editBucketDistribution, setEditBucketDistribution] = useState<string>('')
   const [editBucketBalance, setEditBucketBalance] = useState<string>('')
+  const [editBucketTarget, setEditBucketTarget] = useState<string>('')
   
   const [bucketLoading, setBucketLoading] = useState(false)
   const [isAddFormOpen, setIsAddFormOpen] = useState(false)
@@ -64,6 +67,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
           name: newBucketName,
           distribution_percentage: newBucketDistribution ? parseFloat(newBucketDistribution) : 0,
           current_balance: newBucketBalance ? parseFloat(newBucketBalance) : 0,
+          target_amount: newBucketTarget ? parseFloat(newBucketTarget) : 0,
           user_id: user.id,
         })
 
@@ -72,6 +76,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
       setNewBucketName('')
       setNewBucketDistribution('')
       setNewBucketBalance('')
+      setNewBucketTarget('')
       setIsAddFormOpen(false)
       loadBuckets()
     } catch (error) {
@@ -95,6 +100,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
           name: editBucketName,
           distribution_percentage: editBucketDistribution ? parseFloat(editBucketDistribution) : 0,
           current_balance: editBucketBalance ? parseFloat(editBucketBalance) : 0,
+          target_amount: editBucketTarget ? parseFloat(editBucketTarget) : 0,
         })
         .eq('id', editingBucket.id)
 
@@ -126,7 +132,6 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
     return new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(amount)
   }
 
-  // Calculate total distribution percentage
   const totalDistributionPercentage = buckets.reduce((sum, bucket) => {
     return sum + (bucket.distribution_percentage || 0)
   }, 0)
@@ -199,46 +204,74 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
             </div>
           ) : (
             <div className="grid gap-3">
-              {buckets.map((bucket) => (
-                <div key={bucket.id} className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex items-center justify-between group active:scale-[0.99] transition-transform">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="font-bold text-gray-900 text-lg">{bucket.name}</h3>
-                      {bucket.distribution_percentage > 0 && (
-                         <span className="px-2 py-0.5 bg-blue-50 text-blue-600 text-[10px] rounded font-bold uppercase tracking-wider">
-                           {bucket.distribution_percentage}%
-                         </span>
-                      )}
+              {buckets.map((bucket) => {
+                const target = bucket.target_amount || 0
+                const progress = target > 0 ? Math.min((bucket.current_balance || 0) / target * 100, 100) : 0
+                const isCompleted = target > 0 && (bucket.current_balance || 0) >= target
+
+                return (
+                  <div key={bucket.id} className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 group active:scale-[0.99] transition-transform">
+                    <div className="flex items-center justify-between mb-3">
+                        <div className="flex-1 min-w-0 pr-4">
+                            <h3 className="font-bold text-gray-900 text-lg leading-tight break-words flex items-center gap-2">
+                                {bucket.name}
+                                {isCompleted && <CheckCircle2 className="w-4 h-4 text-emerald-500 flex-shrink-0" />}
+                            </h3>
+                            <div className="flex items-center gap-2 mt-1.5">
+                                <p className="text-xs text-gray-400 font-medium">Saldo attuale</p>
+                                {bucket.distribution_percentage > 0 && (
+                                    <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[10px] rounded-md font-bold uppercase tracking-wide whitespace-nowrap">
+                                    {bucket.distribution_percentage}%
+                                    </span>
+                                )}
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-3 shrink-0">
+                            <div className="text-right">
+                                <span className="font-bold text-lg text-gray-900 whitespace-nowrap block">
+                                    {formatCurrency(bucket.current_balance || 0)}
+                                </span>
+                                {target > 0 && (
+                                    <span className="text-[10px] text-gray-400 font-medium">
+                                        su {formatCurrency(target)}
+                                    </span>
+                                )}
+                            </div>
+                            <div className="flex gap-1">
+                                <button 
+                                    onClick={() => {
+                                        setEditingBucket(bucket)
+                                        setEditBucketName(bucket.name)
+                                        setEditBucketDistribution((bucket.distribution_percentage || 0).toString())
+                                        setEditBucketBalance((bucket.current_balance || 0).toString())
+                                        setEditBucketTarget((bucket.target_amount || 0).toString())
+                                    }}
+                                    className="p-2 text-gray-300 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
+                                >
+                                    <PenLine className="w-4 h-4" />
+                                </button>
+                                <button 
+                                    onClick={() => handleDeleteBucket(bucket.id)}
+                                    className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                                >
+                                    <Trash2 className="w-4 h-4" />
+                                </button>
+                            </div>
+                        </div>
                     </div>
-                    <p className="text-xs text-gray-400 mt-1 font-medium">Saldo attuale</p>
+                    
+                    {/* Progress Bar (Solo se c'è un target) */}
+                    {target > 0 && (
+                        <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                            <div 
+                                className={cn("h-full rounded-full transition-all duration-500", isCompleted ? "bg-emerald-500" : "bg-blue-600")} 
+                                style={{ width: `${progress}%` }} 
+                            />
+                        </div>
+                    )}
                   </div>
-                  
-                  <div className="flex items-center gap-3">
-                    <span className="font-bold text-lg text-gray-900">
-                      {formatCurrency(bucket.current_balance || 0)}
-                    </span>
-                    <div className="flex gap-1">
-                        <button 
-                            onClick={() => {
-                                setEditingBucket(bucket)
-                                setEditBucketName(bucket.name)
-                                setEditBucketDistribution((bucket.distribution_percentage || 0).toString())
-                                setEditBucketBalance((bucket.current_balance || 0).toString())
-                            }}
-                            className="p-2 text-gray-300 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
-                        >
-                            <PenLine className="w-4 h-4" />
-                        </button>
-                        <button 
-                            onClick={() => handleDeleteBucket(bucket.id)}
-                            className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
-                        >
-                            <Trash2 className="w-4 h-4" />
-                        </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </div>
@@ -253,7 +286,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
         </button>
       </div>
 
-      {/* MODALE AGGIUNTA (Fixed & Centered & High Z-Index) */}
+      {/* MODALE AGGIUNTA */}
       {isAddFormOpen && (
         <div 
             className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in" 
@@ -263,13 +296,11 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
             className="bg-white w-full max-w-md rounded-3xl max-h-[85vh] flex flex-col shadow-2xl animate-in zoom-in-95 duration-200" 
             onClick={e => e.stopPropagation()}
           >
-            {/* Header Sticky nel Modale */}
             <div className="shrink-0 border-b border-gray-100 px-6 py-4 flex items-center justify-between">
                <h3 className="text-lg font-bold text-gray-900">Nuovo Bucket</h3>
                <button onClick={() => setIsAddFormOpen(false)} className="p-2 bg-gray-100 hover:bg-gray-200 rounded-full transition-colors"><X className="w-5 h-5 text-gray-500" /></button>
             </div>
             
-            {/* Content Scrollable */}
             <div className="overflow-y-auto p-6">
                 <form onSubmit={handleAddBucket} className="space-y-5">
                 <div>
@@ -311,6 +342,19 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                     </div>
                 </div>
 
+                <div>
+                    <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Target (€) - Opzionale</label>
+                    <input
+                    type="number"
+                    step="0.01"
+                    value={newBucketTarget}
+                    onChange={e => setNewBucketTarget(e.target.value)}
+                    placeholder="Es. 5000.00"
+                    className="w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900"
+                    />
+                    <p className="text-[10px] text-gray-400 mt-1 ml-1">Se raggiunto, l'auto-distribuzione si disattiva (0%)</p>
+                </div>
+
                 <div className="pt-2">
                     <button
                     type="submit"
@@ -326,7 +370,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
         </div>
       )}
 
-      {/* MODALE MODIFICA (Fixed & Centered & High Z-Index) */}
+      {/* MODALE MODIFICA */}
       {editingBucket && (
         <div 
             className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in" 
@@ -376,6 +420,18 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                         className="w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900"
                         />
                     </div>
+                </div>
+
+                <div>
+                    <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Target (€) - Opzionale</label>
+                    <input
+                    type="number"
+                    step="0.01"
+                    value={editBucketTarget}
+                    onChange={e => setEditBucketTarget(e.target.value)}
+                    placeholder="Es. 5000.00"
+                    className="w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900"
+                    />
                 </div>
 
                 <div className="pt-2">

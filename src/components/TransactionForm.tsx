@@ -15,6 +15,11 @@ interface CategoryWithChildren extends Category {
   children?: CategoryWithChildren[]
 }
 
+// Estendiamo Bucket per includere target_amount se non è già nel tipo base
+interface BucketWithTarget extends Bucket {
+  target_amount?: number
+}
+
 export default function TransactionForm({ isOpen, onClose, onSuccess, primaryColor = 'blue', editingTransaction }: TransactionFormProps) {
   const [amount, setAmount] = useState('')
   const [categoryId, setCategoryId] = useState('')
@@ -31,7 +36,7 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
   const [categories, setCategories] = useState<Category[]>([])
   const [categoryTree, setCategoryTree] = useState<CategoryWithChildren[]>([])
   const [filteredCategoryTree, setFilteredCategoryTree] = useState<CategoryWithChildren[]>([])
-  const [buckets, setBuckets] = useState<Bucket[]>([])
+  const [buckets, setBuckets] = useState<BucketWithTarget[]>([])
   const [investments, setInvestments] = useState<Investment[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -192,7 +197,7 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
           category_id: type === 'transfer' ? null : categoryId,
           date: new Date(date).toISOString(),
           description: description || null,
-          is_work_related: false, // Removed feature default to false
+          is_work_related: false,
           type: type,
           bucket_id: type === 'transfer' ? (transferSource === 'unassigned' ? null : transferSource) : (type === 'expense' && bucketId ? bucketId : null),
           investment_id: type === 'transfer' && transferDestinationType === 'investment' ? transferDestination : null,
@@ -219,7 +224,6 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
           })
         if (tError) throw tError
         
-        // Se paga da bucket, aggiorna il bucket
         if (bucketId) {
           const bucket = buckets.find(b => b.id === bucketId)
           if (bucket) {
@@ -229,7 +233,7 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
       }
       // 2. Entrata (Income)
       else if (type === 'income') {
-        // Transazione principale
+        // A. Transazione principale (Tutto entra in liquidità inizialmente)
         const { error: tError } = await supabase.from('transactions').insert({
             amount: amountNumber,
             category_id: categoryId,
@@ -241,23 +245,52 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
           })
         if (tError) throw tError
 
-        // Divisione Automatica
+        // B. Divisione Automatica con HARD CAP
         if (applyAutoSplit) {
             const bucketsWithDistribution = buckets.filter(b => (b.distribution_percentage || 0) > 0)
+            
             for (const bucket of bucketsWithDistribution) {
-              const distributionAmount = (amountNumber * (bucket.distribution_percentage || 0)) / 100
+              // 1. Calcola quanto DOVREBBE andare in base alla %
+              const theoreticalAmount = (amountNumber * (bucket.distribution_percentage || 0)) / 100
               
-              // Transazione di trasferimento interna (negativa per liquidità)
-              await supabase.from('transactions').insert({
-                  amount: -distributionAmount,
-                  date: new Date(date).toISOString(),
-                  description: `Distribuzione automatica a ${bucket.name}`,
-                  type: 'transfer',
-                  bucket_id: bucket.id,
-                  user_id: user.id,
-                })
-              // Aggiorna saldo bucket
-              await supabase.from('buckets').update({ current_balance: (bucket.current_balance || 0) + distributionAmount }).eq('id', bucket.id)
+              // 2. Calcola l'importo REALE basato sul target (Hard Cap)
+              let actualAmount = theoreticalAmount
+              const target = bucket.target_amount || 0
+              const currentBalance = bucket.current_balance || 0
+
+              if (target > 0) {
+                  const spaceRemaining = Math.max(0, target - currentBalance)
+                  // Se lo spazio rimasto è minore di quanto calcolato, taglia l'importo
+                  if (theoreticalAmount > spaceRemaining) {
+                      actualAmount = spaceRemaining
+                  }
+              }
+
+              // Se l'importo reale da versare è > 0, procedi
+              if (actualAmount > 0) {
+                  const newBalance = currentBalance + actualAmount
+                  let updateData: any = { current_balance: newBalance }
+                  
+                  // Se raggiunto o superato il target, disattiva distribuzione futura
+                  if (target > 0 && newBalance >= target) {
+                     updateData.distribution_percentage = 0
+                  }
+
+                  // Crea transazione trasferimento per l'importo REALE
+                  // (Se abbiamo tagliato l'importo, il resto rimane implicitamente nella liquidità)
+                  await supabase.from('transactions').insert({
+                      amount: -actualAmount,
+                      date: new Date(date).toISOString(),
+                      description: `Distribuzione automatica a ${bucket.name}`,
+                      type: 'transfer',
+                      bucket_id: bucket.id,
+                      user_id: user.id,
+                    })
+                  
+                  // Aggiorna bucket
+                  await supabase.from('buckets').update(updateData).eq('id', bucket.id)
+              } 
+              // Se actualAmount è 0 (bucket già pieno), non facciamo nulla e i soldi restano in liquidità
             }
         }
       }
@@ -277,13 +310,9 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
             }
         }
 
-        // Calcolo impatto su liquidità per la transazione
         let transactionAmount = 0
-        // Se parte da Liquidità -> Esce (-)
         if (transferSource === 'unassigned') transactionAmount = -amountNumber
-        // Se arriva a Liquidità (da bucket) -> Entra (+)
         else if (transferSource !== 'unassigned' && transferDestination === 'unassigned') transactionAmount = amountNumber
-        // Bucket -> Bucket o Bucket -> Investimento = 0 sulla liquidità generale
         else transactionAmount = 0
 
         if (transactionAmount !== 0) {
@@ -299,7 +328,7 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
             if (tError) throw tError
         }
 
-        // Aggiorna Sorgente (se non è liquidità)
+        // Aggiorna Sorgente
         if (transferSource !== 'unassigned' && transferSource) {
           const sb = buckets.find(b => b.id === transferSource)
           if (sb) await supabase.from('buckets').update({ current_balance: (sb.current_balance || 0) - amountNumber }).eq('id', transferSource)
@@ -311,7 +340,19 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
           if (inv) await supabase.from('investments').update({ current_value: (inv.current_value || 0) + amountNumber }).eq('id', transferDestination)
         } else if (transferDestination !== 'unassigned' && transferDestination) {
           const db = buckets.find(b => b.id === transferDestination)
-          if (db) await supabase.from('buckets').update({ current_balance: (db.current_balance || 0) + amountNumber }).eq('id', transferDestination)
+          if (db) {
+             // Anche qui applichiamo la logica del target (se trasferisci manualmente più del necessario)
+             // Ma di solito manuale si lascia fare. Qui ho lasciato che se raggiungi target va a 0 la %.
+             const newBalance = (db.current_balance || 0) + amountNumber
+             const target = db.target_amount || 0
+             let updateData: any = { current_balance: newBalance }
+             
+             if (target > 0 && newBalance >= target) {
+                 updateData.distribution_percentage = 0
+             }
+             
+             await supabase.from('buckets').update(updateData).eq('id', transferDestination)
+          }
         }
       }
 
@@ -468,7 +509,7 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                 </div>
             </div>
 
-            {/* Description (RIPRISTINATA) */}
+            {/* Description */}
             <div>
                <label className="text-xs font-bold text-gray-400 uppercase ml-1 mb-1 block">Descrizione</label>
                <div className="relative">
@@ -483,7 +524,7 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                </div>
             </div>
 
-            {/* EXPENSE: Bucket Selector (RIPRISTINATO) */}
+            {/* EXPENSE: Bucket Selector */}
             {type === 'expense' && (
                <div>
                   <label className="text-xs font-bold text-gray-400 uppercase ml-1 mb-1 block">Paga da Bucket (Opzionale)</label>

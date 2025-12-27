@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
-import { ArrowLeft, Save, Plus, Edit2, Trash2, X, LogOut, User, Palette, Layers, PiggyBank, TrendingUp, CheckCircle2 } from 'lucide-react'
-import { supabase, type Category, type Bucket, type Investment } from '../lib/supabase'
-import { formatCurrency, cn } from '../lib/utils'
+import { ArrowLeft, Save, Plus, Edit2, Trash2, X, LogOut, User, Palette, Layers, CheckCircle2 } from 'lucide-react'
+import { supabase, type Category } from '../lib/supabase'
+import { cn } from '../lib/utils'
 
 interface SettingsProps {
   onBack: () => void
@@ -15,16 +15,21 @@ interface CategoryWithChildren extends Category {
 }
 
 export default function Settings({ onBack, onProfileUpdate, primaryColor, onColorChange }: SettingsProps) {
+  // --- STATE: Profilo ---
   const [displayName, setDisplayName] = useState('')
   const [initialLiquidity, setInitialLiquidity] = useState<string>('')
   const [loading, setLoading] = useState(false)
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [profileError, setProfileError] = useState<string | null>(null)
   const [profileSuccess, setProfileSuccess] = useState(false)
 
-  // Categories state
+  // --- STATE: Categorie ---
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [categories, setCategories] = useState<Category[]>([])
   const [incomeTree, setIncomeTree] = useState<CategoryWithChildren[]>([])
   const [expenseTree, setExpenseTree] = useState<CategoryWithChildren[]>([])
+  
+  // Form Aggiunta Categoria
   const [newCategoryName, setNewCategoryName] = useState('')
   const [newCategoryBudget, setNewCategoryBudget] = useState('')
   const [newCategoryParent, setNewCategoryParent] = useState<string>('')
@@ -32,7 +37,7 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
   const [categoryLoading, setCategoryLoading] = useState(false)
   const [categoryError, setCategoryError] = useState<string | null>(null)
   
-  // Edit state
+  // Modale Modifica Categoria
   const [editingCategory, setEditingCategory] = useState<CategoryWithChildren | null>(null)
   const [editCategoryName, setEditCategoryName] = useState('')
   const [editCategoryBudget, setEditCategoryBudget] = useState<string>('')
@@ -40,51 +45,20 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
   const [editCategoryType, setEditCategoryType] = useState<'income' | 'expense'>('expense')
   const [editCategoryLoading, setEditCategoryLoading] = useState(false)
 
-  // Buckets state
-  const [buckets, setBuckets] = useState<Bucket[]>([])
-  const [newBucketName, setNewBucketName] = useState('')
-  const [newBucketDistribution, setNewBucketDistribution] = useState<string>('')
-  const [editingBucket, setEditingBucket] = useState<Bucket | null>(null)
-  const [editBucketName, setEditBucketName] = useState('')
-  const [editBucketDistribution, setEditBucketDistribution] = useState<string>('')
-  const [bucketLoading, setBucketLoading] = useState(false)
-  const [bucketError, setBucketError] = useState<string | null>(null)
-
-  // Investments state
-  const [investments, setInvestments] = useState<Investment[]>([])
-  const [newInvestmentType, setNewInvestmentType] = useState<'ETF' | 'Obbligazioni' | 'Azioni' | 'Conto Deposito' | 'Crypto' | 'Altro'>('ETF')
-  const [newInvestmentValue, setNewInvestmentValue] = useState<string>('')
-  const [editingInvestment, setEditingInvestment] = useState<Investment | null>(null)
-  const [editInvestmentType, setEditInvestmentType] = useState<'ETF' | 'Obbligazioni' | 'Azioni' | 'Conto Deposito' | 'Crypto' | 'Altro'>('ETF')
-  const [editInvestmentValue, setEditInvestmentValue] = useState<string>('')
-  const [investmentLoading, setInvestmentLoading] = useState(false)
-  const [investmentError, setInvestmentError] = useState<string | null>(null)
-
-  // Color picker state
+  // --- STATE: Colore ---
   const [colorHex, setColorHex] = useState<string>(() => {
-    const presetMap: Record<string, string> = {
-      'blue': '#3b82f6',
-      'emerald': '#10b981',
-      'violet': '#8b5cf6',
-      'orange': '#f97316',
-    }
+    const presetMap: Record<string, string> = { 'blue': '#3b82f6', 'emerald': '#10b981', 'violet': '#8b5cf6', 'orange': '#f97316' }
     return presetMap[primaryColor] || primaryColor || '#3b82f6'
   })
 
+  // --- INIT ---
   useEffect(() => {
     loadUserProfile()
     loadCategories()
-    loadBuckets()
-    loadInvestments()
   }, [])
 
   useEffect(() => {
-    const presetMap: Record<string, string> = {
-      'blue': '#3b82f6',
-      'emerald': '#10b981',
-      'violet': '#8b5cf6',
-      'orange': '#f97316',
-    }
+    const presetMap: Record<string, string> = { 'blue': '#3b82f6', 'emerald': '#10b981', 'violet': '#8b5cf6', 'orange': '#f97316' }
     if (presetMap[primaryColor]) {
       setColorHex(presetMap[primaryColor])
     } else if (primaryColor.startsWith('#')) {
@@ -92,6 +66,7 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     }
   }, [primaryColor])
 
+  // --- LOGICA PROFILO ---
   async function loadUserProfile() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
@@ -112,6 +87,78 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     }
   }
 
+  async function handleSaveProfile(e: React.FormEvent) {
+    e.preventDefault()
+    setLoading(true)
+    setProfileError(null)
+    setProfileSuccess(false)
+
+    try {
+      const { data: { user }, error: userError } = await supabase.auth.getUser()
+      if (userError) throw userError
+      if (!user) throw new Error('Utente non autenticato')
+
+      // Update display name
+      const { error } = await supabase.auth.updateUser({
+        data: { display_name: displayName }
+      })
+
+      if (error) throw error
+
+      // Handle initial liquidity
+      const liquidityAmount = parseFloat(initialLiquidity) || 0
+      
+      const { data: existingInitial } = await supabase
+        .from('transactions')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('type', 'initial')
+        .single()
+
+      if (existingInitial) {
+        await supabase
+          .from('transactions')
+          .update({
+            amount: liquidityAmount,
+            date: new Date().toISOString(),
+          })
+          .eq('id', existingInitial.id)
+      } else if (liquidityAmount > 0) {
+        await supabase
+          .from('transactions')
+          .insert({
+            amount: liquidityAmount,
+            type: 'initial',
+            category_id: null,
+            date: new Date().toISOString(),
+            description: 'Liquidità iniziale',
+            is_work_related: false,
+            is_recurring: false,
+            bucket_id: null,
+            investment_id: null,
+            user_id: user.id,
+          })
+      }
+
+      setProfileSuccess(true)
+      onProfileUpdate()
+      setTimeout(() => setProfileSuccess(false), 3000)
+    } catch (error: any) {
+      setProfileError(error.message || 'Errore durante il salvataggio')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // --- LOGICA COLORE ---
+  function handleColorChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const newColor = e.target.value
+    setColorHex(newColor)
+    onColorChange(newColor)
+    localStorage.setItem('primaryColor', newColor)
+  }
+
+  // --- LOGICA CATEGORIE ---
   function buildCategoryTree(categories: Category[]): CategoryWithChildren[] {
     const categoryMap = new Map<string, CategoryWithChildren>()
     const rootCategories: CategoryWithChildren[] = []
@@ -153,7 +200,7 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
 
       const { data, error } = await supabase
         .from('categories')
-        .select('id, name, budget_limit, parent_id, type, created_at')
+        .select('*') 
         .eq('user_id', user.id)
         .order('name')
 
@@ -172,87 +219,33 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     }
   }
 
-  async function loadBuckets() {
-    try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
-
-      const { data, error } = await supabase.from('buckets').select('*').eq('user_id', user.id).order('name')
-      if (error) throw error
-      setBuckets(data || [])
-    } catch (error) {
-      console.error('Error buckets:', error)
-    }
-  }
-
-  async function loadInvestments() {
-    try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
-      const { data, error } = await supabase.from('investments').select('*').eq('user_id', user.id).order('type')
-      if (error) throw error
-      setInvestments(data || [])
-    } catch (error) {
-      console.error('Error investments:', error)
-    }
-  }
-
-  async function handleSaveProfile(e: React.FormEvent) {
-    e.preventDefault()
-    setLoading(true)
-    setProfileError(null)
-    setProfileSuccess(false)
-
-    try {
-      const { data: { user }, error: userError } = await supabase.auth.getUser()
-      if (userError || !user) throw new Error('Utente non autenticato')
-
-      const { error } = await supabase.auth.updateUser({
-        data: { display_name: displayName }
-      })
-      if (error) throw error
-
-      const liquidityAmount = parseFloat(initialLiquidity) || 0
+  function flattenCategories(
+    categories: CategoryWithChildren[], 
+    level: number = 0, 
+    excludeId?: string,
+    filterType?: 'income' | 'expense'
+  ): Array<{ id: string; name: string; level: number }> {
+    const result: Array<{ id: string; name: string; level: number }> = []
+    
+    categories.forEach(category => {
+      if (excludeId && category.id === excludeId) return
+      if (filterType && category.type !== filterType) return
       
-      const { data: existingInitial } = await supabase
-        .from('transactions')
-        .select('id')
-        .eq('user_id', user.id)
-        .eq('type', 'initial')
-        .single()
-
-      if (existingInitial) {
-        await supabase
-          .from('transactions')
-          .update({ amount: liquidityAmount, date: new Date().toISOString() })
-          .eq('id', existingInitial.id)
-      } else if (liquidityAmount > 0) {
-        await supabase
-          .from('transactions')
-          .insert({
-            amount: liquidityAmount,
-            type: 'initial',
-            date: new Date().toISOString(),
-            description: 'Liquidità iniziale',
-            user_id: user.id,
-          })
+      const indent = '-'.repeat(level)
+      const displayName = level > 0 ? `${indent} ${category.name}` : category.name
+      
+      result.push({
+        id: category.id,
+        name: displayName,
+        level: level
+      })
+      
+      if (category.children && category.children.length > 0) {
+        result.push(...flattenCategories(category.children, level + 1, excludeId, filterType))
       }
-
-      setProfileSuccess(true)
-      onProfileUpdate()
-      setTimeout(() => setProfileSuccess(false), 3000)
-    } catch (error: any) {
-      setProfileError(error.message || 'Errore salvataggio')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  function handleColorChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const newColor = e.target.value
-    setColorHex(newColor)
-    onColorChange(newColor)
-    localStorage.setItem('primaryColor', newColor)
+    })
+    
+    return result
   }
 
   async function handleAddCategory(e: React.FormEvent) {
@@ -261,10 +254,13 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     setCategoryError(null)
 
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) throw new Error('No user')
+      const { data: { user }, error: userError } = await supabase.auth.getUser()
+      if (userError) throw userError
+      if (!user) throw new Error('Utente non autenticato')
 
-      const { error } = await supabase.from('categories').insert({
+      const { error } = await supabase
+        .from('categories')
+        .insert({
           name: newCategoryName,
           budget_limit: newCategoryBudget ? parseFloat(newCategoryBudget) : null,
           user_id: user.id,
@@ -277,10 +273,9 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
       setNewCategoryName('')
       setNewCategoryBudget('')
       setNewCategoryParent('')
-      setNewCategoryType('expense')
       loadCategories()
     } catch (error: any) {
-      setCategoryError(error.message || 'Errore salvataggio')
+      setCategoryError(error.message || 'Errore durante il salvataggio')
     } finally {
       setCategoryLoading(false)
     }
@@ -307,6 +302,7 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
   async function handleEditCategory(e: React.FormEvent) {
     e.preventDefault()
     if (!editingCategory) return
+
     setEditCategoryLoading(true)
     setCategoryError(null)
 
@@ -317,151 +313,47 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
         parent_id: editCategoryParent || null,
         type: editCategoryType,
       }
-      const { error } = await supabase.from('categories').update(updateData).eq('id', editingCategory.id)
+
+      const { error } = await supabase
+        .from('categories')
+        .update(updateData)
+        .eq('id', editingCategory.id)
+
       if (error) throw error
+
       closeEditModal()
       loadCategories()
     } catch (error: any) {
-      setCategoryError(error.message)
+      console.error('Error updating category:', error)
+      setCategoryError(error.message || 'Errore durante l\'aggiornamento')
     } finally {
       setEditCategoryLoading(false)
     }
   }
 
   async function handleDeleteCategory(categoryId: string) {
-    if (!confirm('Eliminare categoria e sottocategorie?')) return
+    if (!confirm('Sei sicuro di voler eliminare questa categoria?')) {
+      return
+    }
+
     try {
-      const { error } = await supabase.from('categories').delete().eq('id', categoryId)
+      const { error } = await supabase
+        .from('categories')
+        .delete()
+        .eq('id', categoryId)
+
       if (error) throw error
+
       loadCategories()
     } catch (error: any) {
-      setCategoryError(error.message)
+      console.error('Error deleting category:', error)
+      setCategoryError(error.message || 'Errore durante l\'eliminazione')
     }
-  }
-
-  async function handleAddBucket(e: React.FormEvent) {
-    e.preventDefault()
-    setBucketLoading(true)
-    try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
-
-      const { error } = await supabase.from('buckets').insert({
-          name: newBucketName,
-          distribution_percentage: newBucketDistribution ? parseFloat(newBucketDistribution) : 0,
-          current_balance: 0,
-          user_id: user.id,
-        })
-      if (error) throw error
-      setNewBucketName('')
-      setNewBucketDistribution('')
-      loadBuckets()
-    } catch (error: any) {
-      setBucketError(error.message)
-    } finally {
-      setBucketLoading(false)
-    }
-  }
-
-  async function handleUpdateBucket(e: React.FormEvent) {
-    e.preventDefault()
-    if (!editingBucket) return
-    setBucketLoading(true)
-    try {
-      const { error } = await supabase.from('buckets').update({
-          name: editBucketName,
-          distribution_percentage: editBucketDistribution ? parseFloat(editBucketDistribution) : 0,
-        }).eq('id', editingBucket.id)
-      if (error) throw error
-      setEditingBucket(null)
-      loadBuckets()
-    } catch (error: any) {
-      setBucketError(error.message)
-    } finally {
-      setBucketLoading(false)
-    }
-  }
-
-  async function handleDeleteBucket(bucketId: string) {
-    if (!confirm('Eliminare questo bucket?')) return
-    try {
-      const { error } = await supabase.from('buckets').delete().eq('id', bucketId)
-      if (error) throw error
-      loadBuckets()
-    } catch (error) { console.error(error) }
-  }
-
-  async function handleAddInvestment(e: React.FormEvent) {
-    e.preventDefault()
-    setInvestmentLoading(true)
-    try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
-      const { error } = await supabase.from('investments').insert({
-          type: newInvestmentType,
-          current_value: parseFloat(newInvestmentValue),
-          user_id: user.id,
-        })
-      if (error) throw error
-      setNewInvestmentType('ETF')
-      setNewInvestmentValue('')
-      loadInvestments()
-    } catch (error: any) { setInvestmentError(error.message) } 
-    finally { setInvestmentLoading(false) }
-  }
-
-  async function handleUpdateInvestment(e: React.FormEvent) {
-    e.preventDefault()
-    if (!editingInvestment) return
-    setInvestmentLoading(true)
-    try {
-      const { error } = await supabase.from('investments').update({
-          type: editInvestmentType,
-          current_value: parseFloat(editInvestmentValue),
-          last_updated: new Date().toISOString(),
-        }).eq('id', editingInvestment.id)
-      if (error) throw error
-      setEditingInvestment(null)
-      loadInvestments()
-    } catch (error: any) { setInvestmentError(error.message) } 
-    finally { setInvestmentLoading(false) }
-  }
-
-  async function handleDeleteInvestment(investmentId: string) {
-    if (!confirm('Eliminare investimento?')) return
-    try {
-      const { error } = await supabase.from('investments').delete().eq('id', investmentId)
-      if (error) throw error
-      loadInvestments()
-    } catch (error) { console.error(error) }
-  }
-
-  const totalDistributionPercentage = buckets.reduce((sum, bucket) => sum + (bucket.distribution_percentage || 0), 0)
-
-  function flattenCategories(
-    categories: CategoryWithChildren[], 
-    level: number = 0, 
-    excludeId?: string,
-    filterType?: 'income' | 'expense'
-  ): Array<{ id: string; name: string; level: number }> {
-    const result: Array<{ id: string; name: string; level: number }> = []
-    categories.forEach(category => {
-      if (excludeId && category.id === excludeId) return
-      if (filterType && category.type !== filterType) return
-      
-      const indent = '-'.repeat(level)
-      const displayName = level > 0 ? `${indent} ${category.name}` : category.name
-      result.push({ id: category.id, name: displayName, level: level })
-      
-      if (category.children && category.children.length > 0) {
-        result.push(...flattenCategories(category.children, level + 1, excludeId, filterType))
-      }
-    })
-    return result
   }
 
   function renderCategory(category: CategoryWithChildren, level: number = 0) {
     const indentPx = level * 16
+
     return (
       <div key={category.id} className="group">
         <div
@@ -500,14 +392,16 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     )
   }
 
+  // --- RENDER ---
   return (
     <div className="min-h-screen bg-gray-50 pb-24">
       {/* HEADER STICKY */}
       <div className="bg-white sticky top-0 z-20 border-b border-gray-100 shadow-sm">
         <div className="max-w-md mx-auto px-4 py-4 flex items-center gap-3">
-          <button 
+          <button
             onClick={onBack}
             className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors"
+            aria-label="Indietro"
           >
             <ArrowLeft className="w-6 h-6 text-gray-700" />
           </button>
@@ -525,8 +419,11 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
           </div>
           <div className="p-5 space-y-4">
             <div>
-              <label className="text-xs font-bold text-gray-500 uppercase ml-1">Nome</label>
+              <label htmlFor="displayName" className="text-xs font-bold text-gray-500 uppercase ml-1">
+                Nome
+              </label>
               <input
+                id="displayName"
                 type="text"
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
@@ -534,9 +431,13 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
                 placeholder="Il tuo nome"
               />
             </div>
+
             <div>
-              <label className="text-xs font-bold text-gray-500 uppercase ml-1">Liquidità Iniziale</label>
+              <label htmlFor="initialLiquidity" className="text-xs font-bold text-gray-500 uppercase ml-1">
+                Liquidità Iniziale
+              </label>
               <input
+                id="initialLiquidity"
                 type="number"
                 step="0.01"
                 value={initialLiquidity}
@@ -545,19 +446,12 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
                 placeholder="0.00"
               />
             </div>
+
             {profileSuccess && (
-               <div className="flex items-center gap-2 text-emerald-600 bg-emerald-50 p-3 rounded-lg text-sm font-medium">
-                  <CheckCircle2 className="w-4 h-4" /> Salvato con successo!
-               </div>
+              <div className="flex items-center gap-2 text-emerald-600 bg-emerald-50 p-3 rounded-lg text-sm font-medium">
+                <CheckCircle2 className="w-4 h-4" /> Salvato con successo!
+              </div>
             )}
-            <button
-              onClick={handleSaveProfile}
-              disabled={loading}
-              className="w-full py-3 bg-gray-900 text-white rounded-xl font-bold text-sm shadow-lg shadow-gray-200 active:scale-95 transition-all flex items-center justify-center gap-2"
-            >
-              <Save className="w-4 h-4" />
-              {loading ? 'Salvataggio...' : 'Salva Modifiche'}
-            </button>
           </div>
         </div>
 
@@ -588,6 +482,7 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
             <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Categorie</h2>
           </div>
           <div className="p-5 space-y-6">
+            
             {/* Liste Categorie */}
             <div className="grid grid-cols-1 gap-6">
                 <div>
@@ -607,18 +502,34 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
             {/* Form Aggiunta */}
             <div className="pt-4 border-t border-gray-100">
                 <p className="text-xs font-bold text-gray-400 uppercase mb-3 text-center">Aggiungi Nuova</p>
+                
                 <form onSubmit={handleAddCategory} className="space-y-3">
                     <div className="flex gap-2 bg-gray-50 p-1 rounded-lg">
-                        <button type="button" onClick={() => setNewCategoryType('expense')} className={cn("flex-1 py-1.5 text-xs font-bold rounded-md transition-all", newCategoryType === 'expense' ? "bg-white text-rose-600 shadow-sm" : "text-gray-400")}>Uscita</button>
-                        <button type="button" onClick={() => setNewCategoryType('income')} className={cn("flex-1 py-1.5 text-xs font-bold rounded-md transition-all", newCategoryType === 'income' ? "bg-white text-emerald-600 shadow-sm" : "text-gray-400")}>Entrata</button>
+                        <button
+                          type="button"
+                          onClick={() => { setNewCategoryType('expense'); setNewCategoryParent('') }}
+                          className={cn("flex-1 py-1.5 text-xs font-bold rounded-md transition-all", newCategoryType === 'expense' ? "bg-white text-rose-600 shadow-sm" : "text-gray-400")}
+                        >
+                          Uscita
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setNewCategoryType('income'); setNewCategoryParent('') }}
+                          className={cn("flex-1 py-1.5 text-xs font-bold rounded-md transition-all", newCategoryType === 'income' ? "bg-white text-emerald-600 shadow-sm" : "text-gray-400")}
+                        >
+                          Entrata
+                        </button>
                     </div>
+
                     <input
                         type="text"
                         value={newCategoryName}
                         onChange={(e) => setNewCategoryName(e.target.value)}
+                        required
                         className="w-full p-3 bg-gray-50 rounded-xl text-sm font-medium outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all"
                         placeholder="Nome Categoria"
                     />
+
                     <div className="flex gap-2">
                          <select
                             value={newCategoryParent}
@@ -626,7 +537,9 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
                             className="flex-1 p-3 bg-gray-50 rounded-xl text-sm outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all"
                          >
                             <option value="">Principale</option>
-                            {flattenCategories(newCategoryType === 'income' ? incomeTree : expenseTree, 0, undefined, newCategoryType).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                            {flattenCategories(newCategoryType === 'income' ? incomeTree : expenseTree, 0, undefined, newCategoryType).map(c => (
+                              <option key={c.id} value={c.id}>{c.name}</option>
+                            ))}
                          </select>
                          <input
                             type="number"
@@ -636,43 +549,95 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
                             placeholder="Budget"
                         />
                     </div>
-                    <button type="submit" disabled={categoryLoading} className="w-full py-3 bg-blue-50 text-blue-600 rounded-xl font-bold text-sm hover:bg-blue-100 transition-colors flex items-center justify-center gap-2">
-                        <Plus className="w-4 h-4" /> Aggiungi
+
+                    {categoryError && <p className="text-xs text-red-500 ml-1">{categoryError}</p>}
+
+                    <button
+                      type="submit"
+                      disabled={categoryLoading}
+                      className="w-full py-3 bg-blue-50 text-blue-600 rounded-xl font-bold text-sm hover:bg-blue-100 transition-colors flex items-center justify-center gap-2"
+                    >
+                      <Plus className="w-4 h-4" /> Aggiungi
                     </button>
                 </form>
             </div>
           </div>
         </div>
-
-        {/* BUCKETS & INVESTIMENTI (Quick Actions) */}
-        <div className="grid grid-cols-2 gap-4">
-             {/* Link rapidi o mini-gestione se serve, per ora teniamo pulito */}
-        </div>
         
-        {/* LOGOUT */}
-        <button
-          onClick={async () => { if (window.confirm('Uscire?')) await supabase.auth.signOut() }}
-          className="w-full py-4 text-red-500 font-bold text-sm bg-white rounded-2xl border border-gray-100 hover:bg-red-50 transition-colors flex items-center justify-center gap-2"
-        >
-          <LogOut className="w-4 h-4" /> Esci dall'account
-        </button>
+        {/* ACTION BUTTONS BOTTOM */}
+        <div className="space-y-3">
+            {/* BOTTONE SALVA PROFILO - Spostato qui */}
+            <button
+              onClick={handleSaveProfile}
+              disabled={loading}
+              className="w-full py-4 text-white rounded-2xl font-bold text-sm shadow-lg shadow-gray-200 active:scale-95 transition-all flex items-center justify-center gap-2"
+              style={{ backgroundColor: colorHex }}
+            >
+              <Save className="w-4 h-4" />
+              {loading ? 'Salvataggio...' : 'Salva Profilo'}
+            </button>
+
+            {/* LOGOUT */}
+            <button
+              onClick={async () => { if (window.confirm('Uscire?')) await supabase.auth.signOut() }}
+              className="w-full py-4 text-red-500 font-bold text-sm bg-white rounded-2xl border border-gray-100 hover:bg-red-50 transition-colors flex items-center justify-center gap-2"
+            >
+              <LogOut className="w-4 h-4" /> Esci dall'account
+            </button>
+        </div>
 
       </div>
 
-      {/* Modali Edit (Category, Bucket, Investment) qui sotto, uguali a prima ma con stile pulito */}
-      {/* (Ho mantenuto la logica dei modali esistenti nel codice sopra per brevità, assicurati che siano renderizzati) */}
-       {/* Edit Category Modal */}
-       {editingCategory && (
+      {/* Edit Category Modal */}
+      {editingCategory && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl w-full max-w-md shadow-xl p-6 space-y-4">
+          <div className="bg-white rounded-2xl w-full max-w-md shadow-xl p-6 space-y-4 animate-in zoom-in-95 duration-200">
             <div className="flex justify-between items-center">
                <h3 className="font-bold text-lg">Modifica Categoria</h3>
-               <button onClick={closeEditModal}><X className="w-5 h-5 text-gray-400" /></button>
+               <button onClick={closeEditModal} className="p-1 bg-gray-100 rounded-full hover:bg-gray-200"><X className="w-5 h-5 text-gray-400" /></button>
             </div>
+            
             <form onSubmit={handleEditCategory} className="space-y-4">
-               <input value={editCategoryName} onChange={e => setEditCategoryName(e.target.value)} className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none" />
-               <input type="number" value={editCategoryBudget} onChange={e => setEditCategoryBudget(e.target.value)} className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none" placeholder="Budget" />
-               <button type="submit" className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold">Salva</button>
+               <div className="flex gap-2 bg-gray-50 p-1 rounded-lg">
+                  <button type="button" onClick={() => setEditCategoryType('expense')} className={cn("flex-1 py-1.5 text-xs font-bold rounded-md transition-all", editCategoryType === 'expense' ? "bg-white text-rose-600 shadow-sm" : "text-gray-400")}>Uscita</button>
+                  <button type="button" onClick={() => setEditCategoryType('income')} className={cn("flex-1 py-1.5 text-xs font-bold rounded-md transition-all", editCategoryType === 'income' ? "bg-white text-emerald-600 shadow-sm" : "text-gray-400")}>Entrata</button>
+               </div>
+
+               <input
+                  type="text"
+                  value={editCategoryName}
+                  onChange={e => setEditCategoryName(e.target.value)}
+                  className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all"
+                  placeholder="Nome"
+               />
+               
+               <div className="flex gap-2">
+                 <select
+                    value={editCategoryParent}
+                    onChange={(e) => setEditCategoryParent(e.target.value)}
+                    className="flex-1 p-3 bg-gray-50 rounded-xl text-sm outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all"
+                 >
+                    <option value="">Principale</option>
+                    {flattenCategories(editCategoryType === 'income' ? incomeTree : expenseTree, 0, editingCategory.id, editCategoryType).map(c => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                 </select>
+                 <input
+                    type="number"
+                    value={editCategoryBudget}
+                    onChange={e => setEditCategoryBudget(e.target.value)}
+                    className="w-24 p-3 bg-gray-50 rounded-xl font-medium outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all"
+                    placeholder="Budget"
+                 />
+               </div>
+
+               <button
+                  type="submit"
+                  disabled={editCategoryLoading}
+                  className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-colors"
+               >
+                  {editCategoryLoading ? 'Salvataggio...' : 'Salva Modifiche'}
+               </button>
             </form>
           </div>
         </div>

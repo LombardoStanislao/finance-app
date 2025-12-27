@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { TrendingUp, TrendingDown, Wallet, PiggyBank, ArrowRight, Edit2, Trash2, Settings, ArrowRightLeft, Calendar, AlertTriangle, CheckCircle2, ShoppingBag } from 'lucide-react'
+import { TrendingUp, TrendingDown, Wallet, PiggyBank, Edit2, Trash2, Settings, ArrowRightLeft, Calendar, AlertTriangle, CheckCircle2, ShoppingBag } from 'lucide-react'
 import { supabase, type Transaction, type Category, type Bucket } from '../lib/supabase'
 import { formatCurrency, formatDate, cn } from '../lib/utils'
 import TransactionForm from './TransactionForm'
@@ -121,7 +121,6 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                 percentage: (spent / limit) * 100
             })
         })
-        // Ordina: prima quelli più vicini al limite (o superati)
         budgetsData.sort((a, b) => b.percentage - a.percentage)
       }
       setBudgetProgress(budgetsData)
@@ -152,16 +151,26 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
            <p className="text-xs text-gray-400 font-medium mb-0.5">Bentornato,</p>
            <h1 className="text-xl font-bold text-gray-900 leading-none">{displayName}</h1>
         </div>
-        <button onClick={onOpenSettings} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-600 border border-gray-100">
+        <button onClick={onOpenSettings} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-600 border border-gray-100 active:scale-95 transition-transform">
             <Settings className="w-5 h-5" strokeWidth={2} />
         </button>
       </div>
 
       <div className="max-w-md mx-auto px-4 py-6 space-y-8">
         
-        {/* HERO CARD */}
-        <div className="bg-gradient-to-br from-blue-600 to-indigo-700 rounded-3xl p-6 shadow-lg shadow-blue-200 text-white relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-white opacity-5 rounded-full -mr-10 -mt-10 blur-2xl"></div>
+        {/* HERO CARD - DINAMICA COLORE TEMA */}
+        <div 
+            className="rounded-3xl p-6 shadow-lg text-white relative overflow-hidden transition-colors duration-300"
+            style={{ 
+                backgroundColor: primaryColor,
+                boxShadow: `0 20px 25px -5px ${primaryColor}40` // Ombra colorata
+            }}
+        >
+            {/* Overlay Sfumatura per dare profondità */}
+            <div className="absolute inset-0 bg-gradient-to-br from-white/10 to-black/10 pointer-events-none" />
+            
+            {/* Background Decoration */}
+            <div className="absolute top-0 right-0 w-32 h-32 bg-white opacity-10 rounded-full -mr-10 -mt-10 blur-2xl"></div>
             
             <div className="relative z-10">
                 <div className="flex items-center gap-2 mb-2 opacity-90">
@@ -172,14 +181,14 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                 
                 <div className="flex gap-3">
                     <div className="flex-1 bg-white/10 backdrop-blur-sm rounded-xl p-3 border border-white/10">
-                        <div className="flex items-center gap-1.5 mb-1 text-blue-100">
+                        <div className="flex items-center gap-1.5 mb-1 text-white/90">
                              <PiggyBank className="w-3.5 h-3.5" />
                              <span className="text-[10px] font-bold uppercase">Liquidità</span>
                         </div>
                         <p className="font-semibold text-lg">{formatCurrency(liquidity)}</p>
                     </div>
                     <button onClick={onOpenInvestments} className="flex-1 bg-white/10 backdrop-blur-sm rounded-xl p-3 border border-white/10 text-left hover:bg-white/20 transition-colors">
-                        <div className="flex items-center gap-1.5 mb-1 text-indigo-100">
+                        <div className="flex items-center gap-1.5 mb-1 text-white/90">
                              <TrendingUp className="w-3.5 h-3.5" />
                              <span className="text-[10px] font-bold uppercase">Investimenti</span>
                         </div>
@@ -207,21 +216,17 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
           </div>
         </div>
 
-        {/* BUDGET CARDS (NEW UI) */}
+        {/* BUDGET CARDS */}
         {budgetProgress.length > 0 && (
           <div>
             <div className="flex items-center justify-between px-1 mb-3">
                <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Stato Budget</h2>
                <button onClick={onOpenSettings} className="text-xs font-bold text-blue-600">Gestisci</button>
             </div>
-            
-            {/* Horizontal Scroll Container */}
             <div className="flex gap-3 overflow-x-auto pb-4 -mx-4 px-4 hide-scrollbar">
               {budgetProgress.map((budget) => {
                 const isOver = budget.spent > Number(budget.category.budget_limit)
                 const isWarning = !isOver && budget.percentage > 80
-                
-                // Color Logic
                 const statusColor = isOver ? 'text-rose-600 bg-rose-50' : isWarning ? 'text-amber-600 bg-amber-50' : 'text-emerald-600 bg-emerald-50'
                 const barColor = isOver ? 'bg-rose-500' : isWarning ? 'bg-amber-500' : 'bg-emerald-500'
                 const statusIcon = isOver ? <AlertTriangle className="w-3 h-3" /> : isWarning ? <AlertTriangle className="w-3 h-3" /> : <CheckCircle2 className="w-3 h-3" />
@@ -229,8 +234,6 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
 
                 return (
                   <div key={budget.category.id} className="min-w-[260px] bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex flex-col justify-between">
-                    
-                    {/* Card Header */}
                     <div className="flex justify-between items-start mb-4">
                         <div className="flex items-center gap-2">
                             <div className="p-2 bg-gray-50 rounded-lg text-gray-500">
@@ -245,8 +248,6 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                             {statusIcon} {statusText}
                         </div>
                     </div>
-
-                    {/* Card Body */}
                     <div>
                         <div className="flex items-baseline gap-1 mb-2">
                             <span className={cn("text-2xl font-bold", isOver ? "text-rose-600" : "text-gray-900")}>
@@ -254,17 +255,12 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                             </span>
                             <span className="text-xs text-gray-400 font-medium">rimanenti</span>
                         </div>
-                        
                         <div className="flex justify-between text-[10px] text-gray-400 mb-1.5 font-medium">
                             <span>{formatCurrency(budget.spent)} spesi</span>
                             <span>Limit {formatCurrency(Number(budget.category.budget_limit))}</span>
                         </div>
-
                         <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
-                            <div 
-                                className={cn("h-full rounded-full transition-all duration-500", barColor)} 
-                                style={{ width: `${Math.min(budget.percentage, 100)}%` }} 
-                            />
+                            <div className={cn("h-full rounded-full transition-all duration-500", barColor)} style={{ width: `${Math.min(budget.percentage, 100)}%` }} />
                         </div>
                     </div>
                   </div>

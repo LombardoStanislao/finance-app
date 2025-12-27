@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { ArrowLeft, PieChart as PieChartIcon, TrendingUp, Calendar, BarChart3 } from 'lucide-react'
+import { ArrowLeft, PieChart as PieChartIcon, TrendingUp, Calendar, BarChart3, Wallet } from 'lucide-react'
 import { PieChart, Pie, Cell, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts'
 import { supabase, type Category } from '../lib/supabase'
 import { formatCurrency, cn } from '../lib/utils'
@@ -17,6 +17,13 @@ interface ExpenseByCategory {
   [key: string]: string | number
 }
 
+interface InvestmentDistribution {
+  name: string
+  value: number
+  color: string
+  [key: string]: string | number
+}
+
 interface NetWorthDataPoint {
   date: string
   netWorth: number
@@ -26,9 +33,20 @@ interface NetWorthDataPoint {
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16']
 
+// Mappa colori specifici per investimenti (Coerenza con InvestmentsPage)
+const INVESTMENT_COLORS: Record<string, string> = {
+  'ETF': '#10b981',        // Emerald
+  'Azioni': '#3b82f6',     // Blue
+  'Obbligazioni': '#6366f1', // Indigo
+  'Crypto': '#f97316',     // Orange
+  'Conto Deposito': '#a855f7', // Purple
+  'Altro': '#6b7280'       // Gray
+}
+
 export default function Statistics({ onBack, primaryColor }: StatisticsProps) {
   const [loading, setLoading] = useState(true)
   const [expensesByCategory, setExpensesByCategory] = useState<ExpenseByCategory[]>([])
+  const [investmentData, setInvestmentData] = useState<InvestmentDistribution[]>([])
   const [netWorthData, setNetWorthData] = useState<NetWorthDataPoint[]>([])
   const [selectedMonth, setSelectedMonth] = useState<number>(new Date().getMonth() + 1)
   const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear())
@@ -37,6 +55,7 @@ export default function Statistics({ onBack, primaryColor }: StatisticsProps) {
 
   useEffect(() => {
     loadCategories()
+    loadInvestmentData() // Carica dati investimenti all'avvio
   }, [])
 
   useEffect(() => {
@@ -64,6 +83,41 @@ export default function Statistics({ onBack, primaryColor }: StatisticsProps) {
       setCategories(data || [])
     } catch (error) {
       console.error('Error loading categories:', error)
+    }
+  }
+
+  async function loadInvestmentData() {
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+
+      const { data: investments, error } = await supabase
+        .from('investments')
+        .select('type, current_value')
+        .eq('user_id', user.id)
+
+      if (error) throw error
+
+      // Raggruppa per tipo
+      const typeMap = new Map<string, number>()
+      investments?.forEach((inv) => {
+        const current = typeMap.get(inv.type) || 0
+        typeMap.set(inv.type, current + (inv.current_value || 0))
+      })
+
+      // Crea array dati con colori specifici
+      const data: InvestmentDistribution[] = Array.from(typeMap.entries())
+        .map(([type, value], index) => ({
+          name: type,
+          value: value,
+          // Usa il colore specifico se esiste, altrimenti pesca dai colori generici
+          color: INVESTMENT_COLORS[type] || COLORS[index % COLORS.length]
+        }))
+        .sort((a, b) => b.value - a.value) // Ordina dal più grande
+
+      setInvestmentData(data)
+    } catch (error) {
+      console.error('Error loading investment data:', error)
     }
   }
 
@@ -290,7 +344,7 @@ export default function Statistics({ onBack, primaryColor }: StatisticsProps) {
                   <Pie
                     data={expensesByCategory}
                     cx="50%"
-                    cy="45%" // Leggermente più in alto per far spazio alla legenda
+                    cy="45%"
                     innerRadius={60}
                     outerRadius={80}
                     paddingAngle={5}
@@ -298,6 +352,56 @@ export default function Statistics({ onBack, primaryColor }: StatisticsProps) {
                   >
                     {expensesByCategory.map((entry, index) => (
                       <Cell key={`cell-${index}`} fill={entry.color} stroke="none" />
+                    ))}
+                  </Pie>
+                  <Tooltip 
+                    formatter={(value: number | undefined) => formatCurrency(value || 0)}
+                    contentStyle={{ backgroundColor: 'white', borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                  />
+                  <Legend 
+                     layout="horizontal" 
+                     verticalAlign="bottom" 
+                     align="center"
+                     iconType="circle"
+                     wrapperStyle={{ fontSize: '11px', paddingTop: '20px' }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </div>
+
+        {/* NUOVA CARD: ASSET ALLOCATION (Investimenti) */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+          <div className="flex items-center gap-2 mb-6">
+              <div className="p-1.5 bg-emerald-50 rounded-lg">
+                  <Wallet className="w-4 h-4 text-emerald-600" />
+              </div>
+              <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Asset Allocation</h2>
+          </div>
+
+          {investmentData.length === 0 ? (
+            <div className="h-64 flex flex-col items-center justify-center text-center border-2 border-dashed border-gray-100 rounded-xl">
+               <div className="p-3 bg-gray-50 rounded-full mb-2">
+                 <Wallet className="w-6 h-6 text-gray-300" />
+               </div>
+              <p className="text-gray-400 text-sm font-medium">Nessun investimento attivo</p>
+            </div>
+          ) : (
+            <div className="h-[300px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={investmentData}
+                    cx="50%"
+                    cy="45%"
+                    innerRadius={60}
+                    outerRadius={80}
+                    paddingAngle={5}
+                    dataKey="value"
+                  >
+                    {investmentData.map((entry, index) => (
+                      <Cell key={`cell-inv-${index}`} fill={entry.color} stroke="none" />
                     ))}
                   </Pie>
                   <Tooltip 
@@ -327,7 +431,7 @@ export default function Statistics({ onBack, primaryColor }: StatisticsProps) {
                 <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Trend Patrimonio</h2>
             </div>
             
-            {/* Pulsanti Intervallo - SCROLL FIX */}
+            {/* Pulsanti Intervallo */}
             <div className="flex gap-2 overflow-x-auto pb-2 -mx-2 px-2 hide-scrollbar">
               {(['1M', '3M', '6M', 'YTD', 'ALL'] as const).map((range) => (
                 <button

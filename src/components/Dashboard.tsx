@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react'
-import { TrendingUp, TrendingDown, Wallet, PiggyBank, ArrowRight, Edit2, Trash2, Settings, ArrowRightLeft, Calendar } from 'lucide-react'
+import { TrendingUp, TrendingDown, Wallet, PiggyBank, ArrowRight, Edit2, Trash2, Settings, ArrowRightLeft, Calendar, AlertTriangle, CheckCircle2, ShoppingBag } from 'lucide-react'
 import { supabase, type Transaction, type Category, type Bucket } from '../lib/supabase'
 import { formatCurrency, formatDate, cn } from '../lib/utils'
 import TransactionForm from './TransactionForm'
 
-// ... (Interface BudgetProgress resta uguale)
 interface BudgetProgress {
   category: Category
   spent: number
@@ -52,7 +51,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) { setLoading(false); return }
 
-      // 1. Fetch Dati (Categorie, Transazioni, Buckets, Investimenti)
+      // 1. Fetch Dati
       const [catRes, transRes, buckRes, invRes] = await Promise.all([
         supabase.from('categories').select('*').eq('user_id', user.id),
         supabase.from('transactions').select('*').eq('user_id', user.id).order('date', { ascending: false }).order('created_at', { ascending: false }),
@@ -69,21 +68,17 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
       setBuckets(bucketsList)
       setRecentTransactions(transactions.slice(0, 5))
 
-      // 2. CALCOLO LIQUIDITÀ (Semplificato e Robusto)
-      // La liquidità è semplicemente la somma algebrica di TUTTE le transazioni
-      // Perché il form ora gestisce correttamente i segni (+ per entrate/prelievi, - per uscite/versamenti)
+      // 2. Calcoli Liquidità
       const totalLiquidity = transactions.reduce((sum, t) => sum + (Number(t.amount) || 0), 0)
       setLiquidity(totalLiquidity)
 
-      // 3. Totali Buckets e Investimenti
+      // 3. Totali
       const totalBuckets = bucketsList.reduce((sum, b) => sum + (b.current_balance || 0), 0)
       const totalInvestments = investmentsList.reduce((sum, i) => sum + (i.current_value || 0), 0)
       setInvestmentsTotal(totalInvestments)
-
-      // 4. Patrimonio Totale
       setNetWorth(totalLiquidity + totalBuckets + totalInvestments)
 
-      // 5. Statistiche Mese Corrente
+      // 4. Mese Corrente
       const now = new Date()
       const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
       const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59).toISOString()
@@ -102,7 +97,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
       setMonthIncome(mIncome)
       setMonthExpenses(mExpenses)
 
-      // 6. Calcolo Budget
+      // 5. Calcolo Budget
       const categoriesWithBudget = categoriesList.filter(c => c.budget_limit && c.budget_limit > 0)
       const budgetsData: BudgetProgress[] = []
 
@@ -126,6 +121,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                 percentage: (spent / limit) * 100
             })
         })
+        // Ordina: prima quelli più vicini al limite (o superati)
         budgetsData.sort((a, b) => b.percentage - a.percentage)
       }
       setBudgetProgress(budgetsData)
@@ -137,10 +133,6 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
     }
   }
 
-  // ... (handleDeleteTransaction, getCategoryName, getHexColor rimangono uguali)
-  // ... (Assicurati di includere il resto del componente come return)
-  
-  // (Per brevità ometto le funzioni helper ripetitive se le hai già, ma nel dubbio copia quelle del messaggio precedente)
   async function handleDeleteTransaction(transaction: Transaction, e: React.MouseEvent) {
     e.stopPropagation()
     if (!window.confirm('Eliminare?')) return
@@ -149,7 +141,6 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
   }
 
   function getCategoryName(id: string) { return categories.find(c => c.id === id)?.name || 'Sconosciuta' }
-  function getHexColor(c: string) { return c.startsWith('#') ? c : '#3b82f6' } // Semplificato
 
   if (loading) return <div className="min-h-screen flex items-center justify-center">Caricamento...</div>
 
@@ -166,9 +157,9 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
         </button>
       </div>
 
-      <div className="max-w-md mx-auto px-4 py-6 space-y-6">
+      <div className="max-w-md mx-auto px-4 py-6 space-y-8">
         
-        {/* HERO CARD PATRIMONIO */}
+        {/* HERO CARD */}
         <div className="bg-gradient-to-br from-blue-600 to-indigo-700 rounded-3xl p-6 shadow-lg shadow-blue-200 text-white relative overflow-hidden">
             <div className="absolute top-0 right-0 w-32 h-32 bg-white opacity-5 rounded-full -mr-10 -mt-10 blur-2xl"></div>
             
@@ -187,7 +178,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                         </div>
                         <p className="font-semibold text-lg">{formatCurrency(liquidity)}</p>
                     </div>
-                    <button onClick={onOpenInvestments} className="flex-1 bg-white/10 backdrop-blur-sm rounded-xl p-3 border border-white/10 text-left">
+                    <button onClick={onOpenInvestments} className="flex-1 bg-white/10 backdrop-blur-sm rounded-xl p-3 border border-white/10 text-left hover:bg-white/20 transition-colors">
                         <div className="flex items-center gap-1.5 mb-1 text-indigo-100">
                              <TrendingUp className="w-3.5 h-3.5" />
                              <span className="text-[10px] font-bold uppercase">Investimenti</span>
@@ -216,22 +207,65 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
           </div>
         </div>
 
-        {/* BUDGET PROGRESS */}
+        {/* BUDGET CARDS (NEW UI) */}
         {budgetProgress.length > 0 && (
           <div>
-            <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-3 px-1">Budget Attivi</h2>
-            <div className="space-y-3">
+            <div className="flex items-center justify-between px-1 mb-3">
+               <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Stato Budget</h2>
+               <button onClick={onOpenSettings} className="text-xs font-bold text-blue-600">Gestisci</button>
+            </div>
+            
+            {/* Horizontal Scroll Container */}
+            <div className="flex gap-3 overflow-x-auto pb-4 -mx-4 px-4 hide-scrollbar">
               {budgetProgress.map((budget) => {
                 const isOver = budget.spent > Number(budget.category.budget_limit)
-                const color = isOver ? 'bg-rose-500' : 'bg-emerald-500'
+                const isWarning = !isOver && budget.percentage > 80
+                
+                // Color Logic
+                const statusColor = isOver ? 'text-rose-600 bg-rose-50' : isWarning ? 'text-amber-600 bg-amber-50' : 'text-emerald-600 bg-emerald-50'
+                const barColor = isOver ? 'bg-rose-500' : isWarning ? 'bg-amber-500' : 'bg-emerald-500'
+                const statusIcon = isOver ? <AlertTriangle className="w-3 h-3" /> : isWarning ? <AlertTriangle className="w-3 h-3" /> : <CheckCircle2 className="w-3 h-3" />
+                const statusText = isOver ? 'Sforato' : isWarning ? 'In esaurimento' : 'In linea'
+
                 return (
-                  <div key={budget.category.id} className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
-                    <div className="flex justify-between items-end mb-2">
-                        <p className="font-bold text-gray-900">{budget.category.name}</p>
-                        <p className="text-xs text-gray-400">{formatCurrency(budget.remaining)} rimanenti</p>
+                  <div key={budget.category.id} className="min-w-[260px] bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex flex-col justify-between">
+                    
+                    {/* Card Header */}
+                    <div className="flex justify-between items-start mb-4">
+                        <div className="flex items-center gap-2">
+                            <div className="p-2 bg-gray-50 rounded-lg text-gray-500">
+                                <ShoppingBag className="w-4 h-4" />
+                            </div>
+                            <div>
+                                <p className="font-bold text-gray-900 text-sm">{budget.category.name}</p>
+                                <p className="text-[10px] text-gray-400 font-medium uppercase">Mensile</p>
+                            </div>
+                        </div>
+                        <div className={cn("px-2 py-1 rounded-md text-[10px] font-bold uppercase flex items-center gap-1", statusColor)}>
+                            {statusIcon} {statusText}
+                        </div>
                     </div>
-                    <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
-                      <div className={cn("h-full rounded-full", color)} style={{ width: `${Math.min(budget.percentage, 100)}%` }} />
+
+                    {/* Card Body */}
+                    <div>
+                        <div className="flex items-baseline gap-1 mb-2">
+                            <span className={cn("text-2xl font-bold", isOver ? "text-rose-600" : "text-gray-900")}>
+                                {formatCurrency(budget.remaining)}
+                            </span>
+                            <span className="text-xs text-gray-400 font-medium">rimanenti</span>
+                        </div>
+                        
+                        <div className="flex justify-between text-[10px] text-gray-400 mb-1.5 font-medium">
+                            <span>{formatCurrency(budget.spent)} spesi</span>
+                            <span>Limit {formatCurrency(Number(budget.category.budget_limit))}</span>
+                        </div>
+
+                        <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
+                            <div 
+                                className={cn("h-full rounded-full transition-all duration-500", barColor)} 
+                                style={{ width: `${Math.min(budget.percentage, 100)}%` }} 
+                            />
+                        </div>
                     </div>
                   </div>
                 )
@@ -240,7 +274,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
           </div>
         )}
 
-        {/* TRANSAZIONI RECENTI (Stile identico a Transactions.tsx) */}
+        {/* TRANSAZIONI RECENTI */}
         <div>
           <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-3 px-1">Attività Recente</h2>
           <div className="space-y-3">

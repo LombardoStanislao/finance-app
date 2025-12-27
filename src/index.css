@@ -1,3 +1,17 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* INCOLLA QUESTO CODICE QUI SOTTO */
+@layer utilities {
+  /* Nasconde la scrollbar per Chrome, Safari e Opera */
+  .hide-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Nasconde la scrollbar per IE, Edge e Firefox */
+  .hide-scrollbar {
+    -ms-overflow-style: none;  /* IE and Edge */
+    scrollbar-width: none;  /* Firefox */
+  }
+}

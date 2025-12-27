@@ -22,118 +22,85 @@ export default function BottomNav({ currentView, onNavigate, onAddTransaction, p
 
   const colorHex = getHexColor(primaryColor)
 
-  return (
-    <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-lg z-50 safe-area-bottom">
-      <div className="max-w-md mx-auto px-2 py-2">
-        <div className="flex items-center justify-evenly">
-          {/* Home */}
-          <button
-            onClick={() => onNavigate('dashboard')}
-            className="flex flex-col items-center justify-center gap-1 py-2 px-3 rounded-lg transition-colors flex-1"
-            aria-label="Home"
-          >
-            <Home
-              className={cn(
-                "w-6 h-6",
-                currentView === 'dashboard' ? "" : "text-gray-400"
-              )}
-              style={currentView === 'dashboard' ? { color: colorHex } : {}}
+  const NavItem = ({ 
+    view, 
+    icon: Icon, 
+    label 
+  }: { 
+    view: 'dashboard' | 'transactions' | 'buckets' | 'statistics', 
+    icon: any, 
+    label: string 
+  }) => {
+    const isActive = currentView === view
+    return (
+      <button
+        onClick={() => onNavigate(view)}
+        className="flex flex-col items-center justify-center gap-1 flex-1 py-1 active:scale-95 transition-transform duration-200"
+      >
+        <div className={cn(
+            "p-1.5 rounded-xl transition-all duration-300",
+            isActive ? "bg-opacity-10" : "bg-transparent"
+        )}
+        style={isActive ? { backgroundColor: `${colorHex}15` } : {}}
+        >
+            <Icon
+            className={cn(
+                "w-6 h-6 transition-colors duration-300",
+                isActive ? "" : "text-gray-400"
+            )}
+            style={isActive ? { color: colorHex, strokeWidth: 2.5 } : { strokeWidth: 2 }}
             />
-            <span
-              className={cn(
-                "text-xs font-medium",
-                currentView === 'dashboard' ? "" : "text-gray-400"
-              )}
-              style={currentView === 'dashboard' ? { color: colorHex } : {}}
-            >
-              Home
-            </span>
-          </button>
-
-          {/* Transactions */}
-          <button
-            onClick={() => onNavigate('transactions')}
-            className="flex flex-col items-center justify-center gap-1 py-2 px-3 rounded-lg transition-colors flex-1"
-            aria-label="Transazioni"
-          >
-            <History
-              className={cn(
-                "w-6 h-6",
-                currentView === 'transactions' ? "" : "text-gray-400"
-              )}
-              style={currentView === 'transactions' ? { color: colorHex } : {}}
-            />
-            <span
-              className={cn(
-                "text-xs font-medium",
-                currentView === 'transactions' ? "" : "text-gray-400"
-              )}
-              style={currentView === 'transactions' ? { color: colorHex } : {}}
-            >
-              Transazioni
-            </span>
-          </button>
-
-          {/* Add Button (Center) - Perfect Circle */}
-          <button
-            onClick={onAddTransaction}
-            className="flex items-center justify-center h-14 w-14 rounded-full shadow-lg transition-transform hover:scale-105 active:scale-95 flex-shrink-0"
-            style={{ backgroundColor: colorHex }}
-            aria-label="Aggiungi Transazione"
-          >
-            <Plus className="w-7 h-7 text-white" />
-          </button>
-
-          {/* Buckets */}
-          <button
-            onClick={() => onNavigate('buckets')}
-            className="flex flex-col items-center justify-center gap-1 py-2 px-3 rounded-lg transition-colors flex-1"
-            aria-label="Buckets"
-          >
-            <PiggyBank
-              className={cn(
-                "w-6 h-6",
-                currentView === 'buckets' ? "" : "text-gray-400"
-              )}
-              style={currentView === 'buckets' ? { color: colorHex } : {}}
-            />
-            <span
-              className={cn(
-                "text-xs font-medium",
-                currentView === 'buckets' ? "" : "text-gray-400"
-              )}
-              style={currentView === 'buckets' ? { color: colorHex } : {}}
-            >
-              Buckets
-            </span>
-          </button>
-
-          {/* Statistics */}
-          <button
-            onClick={() => onNavigate('statistics')}
-            className="flex flex-col items-center justify-center gap-1 py-2 px-3 rounded-lg transition-colors flex-1"
-            aria-label="Statistiche"
-          >
-            <PieChart
-              className={cn(
-                "w-6 h-6",
-                currentView === 'statistics' ? "" : "text-gray-400"
-              )}
-              style={currentView === 'statistics' ? { color: colorHex } : {}}
-            />
-            <span
-              className={cn(
-                "text-xs font-medium",
-                currentView === 'statistics' ? "" : "text-gray-400"
-              )}
-              style={currentView === 'statistics' ? { color: colorHex } : {}}
-            >
-              Statistiche
-            </span>
-          </button>
         </div>
-      </div>
-    </nav>
+        <span
+          className={cn(
+            "text-[10px] font-semibold transition-colors duration-300",
+            isActive ? "" : "text-gray-400"
+          )}
+          style={isActive ? { color: colorHex } : {}}
+        >
+          {label}
+        </span>
+      </button>
+    )
+  }
+
+  return (
+    <>
+      {/* Spacer per evitare che il contenuto venga coperto dalla navbar */}
+      <div className="h-24" /> 
+
+      <nav className="fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-md shadow-[0_-5px_15px_rgba(0,0,0,0.04)] border-t border-gray-100 z-50 pb-safe">
+        <div className="max-w-md mx-auto px-4 h-[72px] flex items-center justify-between relative">
+          
+          {/* Gruppo Sinistra */}
+          <div className="flex flex-1 justify-around">
+            <NavItem view="dashboard" icon={Home} label="Home" />
+            <NavItem view="transactions" icon={History} label="Storico" />
+          </div>
+
+          {/* Tasto Centrale (Floating) */}
+          <div className="relative -top-6 px-2">
+            <button
+              onClick={onAddTransaction}
+              className="flex items-center justify-center h-14 w-14 rounded-full text-white shadow-xl transition-transform active:scale-90 hover:scale-105"
+              style={{ 
+                  backgroundColor: colorHex,
+                  boxShadow: `0 8px 20px -4px ${colorHex}60` // Ombra colorata
+              }}
+              aria-label="Nuova Transazione"
+            >
+              <Plus className="w-8 h-8" strokeWidth={3} />
+            </button>
+          </div>
+
+          {/* Gruppo Destra */}
+          <div className="flex flex-1 justify-around">
+            <NavItem view="buckets" icon={PiggyBank} label="Buckets" />
+            <NavItem view="statistics" icon={PieChart} label="Analisi" />
+          </div>
+
+        </div>
+      </nav>
+    </>
   )
 }
-

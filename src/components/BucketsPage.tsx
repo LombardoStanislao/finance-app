@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { ArrowLeft, Plus, Trash2, X, Target, PiggyBank, PenLine } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, X, Target, PiggyBank, PenLine, Settings } from 'lucide-react'
 import { supabase, type Bucket } from '../lib/supabase'
 
 interface BucketsPageProps {
@@ -133,20 +133,29 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
 
   return (
     <div className="min-h-screen bg-gray-50 pb-24">
-      {/* HEADER STICKY (Come Investimenti) */}
-      <div className="bg-white sticky top-0 z-10 border-b border-gray-100 px-4 py-4 flex items-center gap-3">
-        <button 
-          onClick={onBack}
-          className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors"
-        >
-          <ArrowLeft className="w-6 h-6 text-gray-700" />
+      {/* HEADER STICKY CORRETTO */}
+      <div className="bg-white sticky top-0 z-20 border-b border-gray-100 shadow-sm px-4 py-4 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+            <button 
+            onClick={onBack}
+            className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors"
+            >
+            <ArrowLeft className="w-6 h-6 text-gray-700" />
+            </button>
+            <h1 className="text-xl font-bold text-gray-900">I tuoi Buckets</h1>
+        </div>
+        <button
+            onClick={onOpenSettings}
+            className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full transition-colors text-gray-600 border border-gray-100 active:scale-95"
+            aria-label="Impostazioni"
+          >
+            <Settings className="w-5 h-5" strokeWidth={2} />
         </button>
-        <h1 className="text-xl font-bold text-gray-900">I tuoi Buckets</h1>
       </div>
 
       <div className="px-4 py-6 max-w-lg mx-auto space-y-6">
         
-        {/* CARD RIEPILOGO (Stile Investimenti) */}
+        {/* CARD RIEPILOGO */}
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 relative overflow-hidden">
           <div className="absolute top-0 right-0 p-4 opacity-5">
             <Target className="w-32 h-32 text-blue-600" />
@@ -244,7 +253,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
         </button>
       </div>
 
-      {/* MODALE AGGIUNTA (Style coerente) */}
+      {/* MODALE AGGIUNTA */}
       {isAddFormOpen && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-4 backdrop-blur-sm animate-in fade-in" onClick={() => setIsAddFormOpen(false)}>
           <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl animate-in slide-in-from-bottom-10" onClick={e => e.stopPropagation()}>
@@ -307,7 +316,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
         </div>
       )}
 
-      {/* MODALE MODIFICA (Style coerente) */}
+      {/* MODALE MODIFICA */}
       {editingBucket && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-4 backdrop-blur-sm animate-in fade-in" onClick={() => setEditingBucket(null)}>
           <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl animate-in slide-in-from-bottom-10" onClick={e => e.stopPropagation()}>

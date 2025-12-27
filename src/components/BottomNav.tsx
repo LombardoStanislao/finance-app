@@ -95,7 +95,7 @@ export default function BottomNav({ currentView, onNavigate, onAddTransaction, p
 
           {/* Gruppo Destra */}
           <div className="flex flex-1 justify-around">
-            <NavItem view="buckets" icon={PiggyBank} label="Buckets" />
+            <NavItem view="buckets" icon={PiggyBank} label="Salvadanai" />
             <NavItem view="statistics" icon={PieChart} label="Analisi" />
           </div>
 

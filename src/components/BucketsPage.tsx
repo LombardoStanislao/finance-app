@@ -146,14 +146,38 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
   }
 
   async function handleDeleteBucket(bucketId: string) {
-    if (!confirm('Sei sicuro di voler eliminare questo bucket?')) return
+    // 1. TROVA IL BUCKET E CONTROLLA IL SALDO
+    const bucketToDelete = buckets.find(b => b.id === bucketId)
+    
+    if (bucketToDelete && (bucketToDelete.current_balance || 0) > 0) {
+      alert('Impossibile eliminare: Il salvadanaio contiene ancora del denaro. Per favore svuotalo prima (trasferisci i fondi o modifica il saldo a 0).')
+      return // Blocca l'esecuzione qui
+    }
+
+    // 2. SE VUOTO, PROCEDI CON LA CANCELLAZIONE SICURA
+    if (!confirm('Sei sicuro di voler eliminare questo salvadanaio? Lo storico delle transazioni verrà mantenuto ma scollegato.')) return
 
     try {
-      const { error } = await supabase.from('buckets').delete().eq('id', bucketId)
+      // Scollega le transazioni associate (setta bucket_id a null)
+      const { error: unlinkError } = await supabase
+        .from('transactions')
+        .update({ bucket_id: null })
+        .eq('bucket_id', bucketId)
+
+      if (unlinkError) throw unlinkError
+
+      // Elimina il bucket
+      const { error } = await supabase
+        .from('buckets')
+        .delete()
+        .eq('id', bucketId)
+
       if (error) throw error
+      
       loadBuckets()
     } catch (error) {
       console.error('Error deleting bucket:', error)
+      alert('Impossibile eliminare il salvadanaio. Riprova.')
     }
   }
 
@@ -172,7 +196,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
             >
             <ArrowLeft className="w-6 h-6 text-gray-700" />
             </button>
-            <h1 className="text-xl font-bold text-gray-900">I tuoi Buckets</h1>
+            <h1 className="text-xl font-bold text-gray-900">I tuoi Salvadanai</h1>
         </div>
         <button
             onClick={onOpenSettings}
@@ -213,7 +237,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
         <div className="space-y-3">
           <div className="flex items-center justify-between px-1">
             <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wider">Salvadanai Attivi</h2>
-            <span className="text-xs text-gray-400 font-medium">{buckets.length} bucket</span>
+            <span className="text-xs text-gray-400 font-medium">{buckets.length} salvadanai</span>
           </div>
 
           {loading ? (
@@ -225,7 +249,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
               <div className="bg-gray-50 w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3">
                 <PiggyBank className="w-6 h-6 text-gray-400" />
               </div>
-              <p className="text-gray-500 font-medium">Nessun bucket creato</p>
+              <p className="text-gray-500 font-medium">Nessun salvadanaio creato</p>
             </div>
           ) : (
             <div className="grid gap-3">
@@ -312,7 +336,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
           style={{ backgroundColor: primaryColor }}
         >
           <Plus className="w-5 h-5" />
-          Nuovo Bucket
+          Nuovo Salvadanaio
         </button>
       </div>
 
@@ -327,14 +351,14 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
             onClick={e => e.stopPropagation()}
           >
             <div className="shrink-0 border-b border-gray-100 px-6 py-4 flex items-center justify-between">
-               <h3 className="text-lg font-bold text-gray-900">Nuovo Bucket</h3>
+               <h3 className="text-lg font-bold text-gray-900">Nuovo Salvadanaio</h3>
                <button onClick={() => setIsAddFormOpen(false)} className="p-2 bg-gray-100 hover:bg-gray-200 rounded-full transition-colors"><X className="w-5 h-5 text-gray-500" /></button>
             </div>
             
             <div className="overflow-y-auto p-6">
                 <form onSubmit={handleAddBucket} className="space-y-5">
                 <div>
-                    <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Nome Bucket</label>
+                    <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Nome Salvadanaio</label>
                     <input
                     type="text"
                     value={newBucketName}
@@ -400,7 +424,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                     className="w-full py-4 bg-blue-600 text-white font-bold rounded-2xl shadow-xl shadow-blue-100 hover:bg-blue-700 active:scale-95 transition-all disabled:opacity-50"
                     style={{ backgroundColor: primaryColor }}
                     >
-                    {bucketLoading ? 'Salvataggio...' : 'Crea Bucket'}
+                    {bucketLoading ? 'Salvataggio...' : 'Crea Salvadanaio'}
                     </button>
                 </div>
                 </form>
@@ -420,14 +444,14 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
             onClick={e => e.stopPropagation()}
           >
             <div className="shrink-0 border-b border-gray-100 px-6 py-4 flex items-center justify-between">
-               <h3 className="text-lg font-bold text-gray-900">Modifica Bucket</h3>
+               <h3 className="text-lg font-bold text-gray-900">Modifica Salvadanaio</h3>
                <button onClick={() => setEditingBucket(null)} className="p-2 bg-gray-100 hover:bg-gray-200 rounded-full transition-colors"><X className="w-5 h-5 text-gray-500" /></button>
             </div>
             
             <div className="overflow-y-auto p-6">
                 <form onSubmit={handleUpdateBucket} className="space-y-5">
                 <div>
-                    <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Nome Bucket</label>
+                    <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Nome Salvadanaio</label>
                     <input
                     type="text"
                     value={editBucketName}

@@ -34,7 +34,7 @@ export default function InvestmentsPage({ onBack, onOpenSettings, primaryColor }
         .from('investments')
         .select('*')
         .eq('user_id', user.id)
-        .order('current_value', { ascending: false }) // Ordina per valore decrescente
+        .order('current_value', { ascending: false })
 
       if (error) throw error
       setInvestments(data || [])
@@ -152,9 +152,19 @@ export default function InvestmentsPage({ onBack, onOpenSettings, primaryColor }
 
       <div className="px-4 py-6 max-w-lg mx-auto space-y-8">
         
-        {/* HERO CARD PORTAFOGLIO */}
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 text-center relative overflow-hidden">
-            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 to-indigo-600"></div>
+        {/* HERO CARD PORTAFOGLIO - CON COLORI DINAMICI */}
+        <div 
+            className="bg-white p-6 rounded-2xl border border-gray-100 text-center relative overflow-hidden transition-all duration-300"
+            style={{ 
+                boxShadow: `0 10px 30px -10px ${primaryColor}40` // Ombra colorata
+            }}
+        >
+            {/* Linea superiore colorata */}
+            <div 
+                className="absolute top-0 left-0 w-full h-1" 
+                style={{ backgroundColor: primaryColor }}
+            ></div>
+            
             <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Patrimonio Investito</p>
             <p className="text-4xl font-black text-gray-900 tracking-tight">{formatCurrency(totalPortfolio)}</p>
             <div className="mt-4 flex justify-center gap-2">
@@ -179,10 +189,7 @@ export default function InvestmentsPage({ onBack, onOpenSettings, primaryColor }
             </div>
           ) : (
             categories.map((cat) => {
-              // Filtra gli investimenti per questa categoria
               const categoryItems = investments.filter(item => item.type === cat.type)
-              
-              // Se non ci sono item in questa categoria, non mostrare nulla
               if (categoryItems.length === 0) return null
 
               const categoryTotal = categoryItems.reduce((sum, item) => sum + item.current_value, 0)
@@ -243,10 +250,14 @@ export default function InvestmentsPage({ onBack, onOpenSettings, primaryColor }
           )}
         </div>
 
-        {/* FAB (Floating Action Button) */}
+        {/* FAB (Floating Action Button) - CON COLORE DINAMICO */}
         <button
           onClick={openAddForm}
-          className="w-full py-4 bg-blue-600 text-white rounded-xl font-bold shadow-lg shadow-blue-200 active:scale-95 transition-all flex items-center justify-center gap-2 sticky bottom-6"
+          className="w-full py-4 text-white rounded-xl font-bold shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2 sticky bottom-6"
+          style={{ 
+            backgroundColor: primaryColor,
+            boxShadow: `0 10px 20px -5px ${primaryColor}40`
+          }}
         >
           <Plus className="w-5 h-5" />
           Aggiungi Asset
@@ -311,7 +322,11 @@ export default function InvestmentsPage({ onBack, onOpenSettings, primaryColor }
                 <button
                   type="submit"
                   disabled={formLoading}
-                  className="w-full py-4 bg-blue-600 text-white font-bold rounded-2xl shadow-xl shadow-blue-100 hover:bg-blue-700 active:scale-95 transition-all disabled:opacity-50"
+                  className="w-full py-4 text-white font-bold rounded-2xl shadow-xl hover:opacity-90 active:scale-95 transition-all disabled:opacity-50"
+                  style={{ 
+                    backgroundColor: primaryColor,
+                    boxShadow: `0 10px 20px -5px ${primaryColor}40`
+                  }}
                 >
                   {formLoading ? 'Salvataggio...' : 'Salva Asset'}
                 </button>

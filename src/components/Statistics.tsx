@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { ArrowLeft, PieChart as PieChartIcon, TrendingUp, Calendar, BarChart3, Wallet } from 'lucide-react'
+import { ArrowLeft, TrendingUp, Calendar, BarChart3, Wallet, TrendingDown } from 'lucide-react'
 import { PieChart, Pie, Cell, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts'
 import { supabase, type Category } from '../lib/supabase'
 import { formatCurrency, cn } from '../lib/utils'
@@ -10,13 +10,14 @@ interface StatisticsProps {
   primaryColor: string
 }
 
-interface ExpenseByCategory {
+interface CategoryData {
   name: string
   value: number
   color: string
   [key: string]: string | number
 }
 
+// FIX: Aggiunta la firma dell'indice per soddisfare Recharts (ChartDataInput)
 interface InvestmentDistribution {
   name: string
   value: number
@@ -33,42 +34,74 @@ interface NetWorthDataPoint {
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16']
 
-// Mappa colori specifici per investimenti (Coerenza con InvestmentsPage)
+// Mappa colori specifici per investimenti
 const INVESTMENT_COLORS: Record<string, string> = {
-  'ETF': '#10b981',        // Emerald
-  'Azioni': '#3b82f6',     // Blue
-  'Obbligazioni': '#6366f1', // Indigo
-  'Crypto': '#f97316',     // Orange
-  'Conto Deposito': '#a855f7', // Purple
-  'Altro': '#6b7280'       // Gray
+  'ETF': '#10b981',
+  'Azioni': '#3b82f6',
+  'Obbligazioni': '#6366f1',
+  'Crypto': '#f97316',
+  'Conto Deposito': '#a855f7',
+  'Altro': '#6b7280'
+}
+
+// Funzione per renderizzare la label con la percentuale all'esterno
+const renderCustomizedLabel = (props: any) => {
+  // FIX: Rimosso 'innerRadius' che non veniva utilizzato
+  const { cx, cy, midAngle, outerRadius, percent } = props
+  const RADIAN = Math.PI / 180
+  // Posiziona la label un po' fuori dal raggio esterno
+  const radius = outerRadius * 1.35
+  const x = cx + radius * Math.cos(-midAngle * RADIAN)
+  const y = cy + radius * Math.sin(-midAngle * RADIAN)
+
+  // Mostriamo la label se la percentuale è > 0.5%
+  if (percent < 0.005) return null
+
+  const percentageValue = (percent * 100).toFixed(0)
+  const labelText = percentageValue === '0' ? '<1%' : `${percentageValue}%`
+
+  return (
+    <text 
+      x={x} 
+      y={y} 
+      fill="#6b7280" 
+      textAnchor={x > cx ? 'start' : 'end'} 
+      dominantBaseline="central" 
+      className="text-[10px] font-bold"
+    >
+      {labelText}
+    </text>
+  )
 }
 
 export default function Statistics({ onBack, primaryColor }: StatisticsProps) {
   const [loading, setLoading] = useState(true)
-  const [expensesByCategory, setExpensesByCategory] = useState<ExpenseByCategory[]>([])
+  const [expensesByCategory, setExpensesByCategory] = useState<CategoryData[]>([])
+  const [incomeByCategory, setIncomeByCategory] = useState<CategoryData[]>([])
   const [investmentData, setInvestmentData] = useState<InvestmentDistribution[]>([])
   const [netWorthData, setNetWorthData] = useState<NetWorthDataPoint[]>([])
   const [selectedMonth, setSelectedMonth] = useState<number>(new Date().getMonth() + 1)
   const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear())
   const [timeRange, setTimeRange] = useState<'1M' | '3M' | '6M' | 'YTD' | 'ALL'>('3M')
-  const [categories, setCategories] = useState<Category[]>([])
+  
+  const [allCategories, setAllCategories] = useState<Category[]>([])
 
   useEffect(() => {
-    loadCategories()
-    loadInvestmentData() // Carica dati investimenti all'avvio
+    loadAllCategories()
+    loadInvestmentData()
   }, [])
 
   useEffect(() => {
-    if (categories.length > 0) {
-      loadExpenseData()
+    if (allCategories.length > 0) {
+      loadTransactionData()
     }
-  }, [selectedMonth, selectedYear, categories])
+  }, [selectedMonth, selectedYear, allCategories])
 
   useEffect(() => {
     loadNetWorthData()
   }, [timeRange])
 
-  async function loadCategories() {
+  async function loadAllCategories() {
     try {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
@@ -77,10 +110,9 @@ export default function Statistics({ onBack, primaryColor }: StatisticsProps) {
         .from('categories')
         .select('*')
         .eq('user_id', user.id)
-        .eq('type', 'expense')
 
       if (error) throw error
-      setCategories(data || [])
+      setAllCategories(data || [])
     } catch (error) {
       console.error('Error loading categories:', error)
     }
@@ -98,22 +130,19 @@ export default function Statistics({ onBack, primaryColor }: StatisticsProps) {
 
       if (error) throw error
 
-      // Raggruppa per tipo
       const typeMap = new Map<string, number>()
       investments?.forEach((inv) => {
         const current = typeMap.get(inv.type) || 0
         typeMap.set(inv.type, current + (inv.current_value || 0))
       })
 
-      // Crea array dati con colori specifici
       const data: InvestmentDistribution[] = Array.from(typeMap.entries())
         .map(([type, value], index) => ({
           name: type,
           value: value,
-          // Usa il colore specifico se esiste, altrimenti pesca dai colori generici
           color: INVESTMENT_COLORS[type] || COLORS[index % COLORS.length]
         }))
-        .sort((a, b) => b.value - a.value) // Ordina dal più grande
+        .sort((a, b) => b.value - a.value)
 
       setInvestmentData(data)
     } catch (error) {
@@ -121,7 +150,7 @@ export default function Statistics({ onBack, primaryColor }: StatisticsProps) {
     }
   }
 
-  async function loadExpenseData() {
+  async function loadTransactionData() {
     try {
       setLoading(true)
       const { data: { user } } = await supabase.auth.getUser()
@@ -134,32 +163,41 @@ export default function Statistics({ onBack, primaryColor }: StatisticsProps) {
         .from('transactions')
         .select('amount, category_id, type')
         .eq('user_id', user.id)
-        .eq('type', 'expense')
         .gte('date', startDate)
         .lte('date', endDate)
 
       if (error) throw error
 
-      const categoryMap = new Map<string, number>()
+      const expenseMap = new Map<string, number>()
+      const incomeMap = new Map<string, number>()
+
       transactions?.forEach((transaction) => {
         if (transaction.category_id) {
-          const current = categoryMap.get(transaction.category_id) || 0
-          categoryMap.set(transaction.category_id, current + Math.abs(transaction.amount))
+          const val = Math.abs(transaction.amount)
+          if (transaction.type === 'expense') {
+            expenseMap.set(transaction.category_id, (expenseMap.get(transaction.category_id) || 0) + val)
+          } else if (transaction.type === 'income') {
+            incomeMap.set(transaction.category_id, (incomeMap.get(transaction.category_id) || 0) + val)
+          }
         }
       })
 
-      const expenseData: ExpenseByCategory[] = Array.from(categoryMap.entries()).map(([categoryId, value], index) => {
-        const category = categories.find(c => c.id === categoryId)
-        return {
-          name: category?.name || 'Sconosciuta',
-          value: value,
-          color: COLORS[index % COLORS.length]
-        }
-      }).sort((a, b) => b.value - a.value)
+      const formatData = (map: Map<string, number>) => {
+        return Array.from(map.entries()).map(([categoryId, value], index) => {
+          const category = allCategories.find(c => c.id === categoryId)
+          return {
+            name: category?.name || 'Sconosciuta',
+            value: value,
+            color: COLORS[index % COLORS.length]
+          }
+        }).sort((a, b) => b.value - a.value)
+      }
 
-      setExpensesByCategory(expenseData)
+      setExpensesByCategory(formatData(expenseMap))
+      setIncomeByCategory(formatData(incomeMap))
+
     } catch (error) {
-      console.error('Error loading expense data:', error)
+      console.error('Error loading transaction data:', error)
     } finally {
       setLoading(false)
     }
@@ -174,21 +212,11 @@ export default function Statistics({ onBack, primaryColor }: StatisticsProps) {
       const now = new Date()
       
       switch (timeRange) {
-        case '1M':
-          startDate = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate())
-          break
-        case '3M':
-          startDate = new Date(now.getFullYear(), now.getMonth() - 3, now.getDate())
-          break
-        case '6M':
-          startDate = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate())
-          break
-        case 'YTD':
-          startDate = new Date(now.getFullYear(), 0, 1)
-          break
-        case 'ALL':
-          startDate = new Date(2000, 0, 1)
-          break
+        case '1M': startDate = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate()); break
+        case '3M': startDate = new Date(now.getFullYear(), now.getMonth() - 3, now.getDate()); break
+        case '6M': startDate = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate()); break
+        case 'YTD': startDate = new Date(now.getFullYear(), 0, 1); break
+        case 'ALL': startDate = new Date(2000, 0, 1); break
       }
 
       const { data: transactions, error } = await supabase
@@ -200,18 +228,10 @@ export default function Statistics({ onBack, primaryColor }: StatisticsProps) {
 
       if (error) throw error
 
-      const { data: investments } = await supabase
-        .from('investments')
-        .select('current_value')
-        .eq('user_id', user.id)
-
+      const { data: investments } = await supabase.from('investments').select('current_value').eq('user_id', user.id)
       const investmentsTotal = investments?.reduce((sum, inv) => sum + (inv.current_value || 0), 0) || 0
 
-      const { data: buckets } = await supabase
-        .from('buckets')
-        .select('current_balance')
-        .eq('user_id', user.id)
-
+      const { data: buckets } = await supabase.from('buckets').select('current_balance').eq('user_id', user.id)
       const bucketsTotal = buckets?.reduce((sum, bucket) => sum + (bucket.current_balance || 0), 0) || 0
 
       const dateMap = new Map<string, { income: number; expenses: number }>()
@@ -219,19 +239,12 @@ export default function Statistics({ onBack, primaryColor }: StatisticsProps) {
       transactions?.forEach((transaction) => {
         const date = transaction.date.split('T')[0]
         const current = dateMap.get(date) || { income: 0, expenses: 0 }
-        
-        if (transaction.type === 'income') {
-          current.income += transaction.amount
-        } else if (transaction.type === 'expense') {
-          current.expenses += Math.abs(transaction.amount)
-        }
+        if (transaction.type === 'income') current.income += transaction.amount
+        else if (transaction.type === 'expense') current.expenses += Math.abs(transaction.amount)
         dateMap.set(date, current)
       })
 
-      const initialLiquidity = transactions
-        ?.filter(t => t.type === 'initial')
-        .reduce((sum, t) => sum + (Number(t.amount) || 0), 0) || 0
-
+      const initialLiquidity = transactions?.filter(t => t.type === 'initial').reduce((sum, t) => sum + (Number(t.amount) || 0), 0) || 0
       const sortedDates = Array.from(dateMap.entries()).sort((a, b) => a[0].localeCompare(b[0]))
       
       let runningBalance = initialLiquidity
@@ -242,8 +255,8 @@ export default function Statistics({ onBack, primaryColor }: StatisticsProps) {
         netWorthPoints.push({
           date: new Date(date).toLocaleDateString('it-IT', { month: 'short', day: 'numeric' }),
           netWorth: runningBalance + bucketsTotal + investmentsTotal,
-          income: income,
-          expenses: expenses
+          income,
+          expenses
         })
       })
 
@@ -255,7 +268,6 @@ export default function Statistics({ onBack, primaryColor }: StatisticsProps) {
           expenses: 0
         })
       }
-
       setNetWorthData(netWorthPoints)
     } catch (error) {
       console.error('Error loading net worth data:', error)
@@ -269,61 +281,112 @@ export default function Statistics({ onBack, primaryColor }: StatisticsProps) {
   return (
     <div className="min-h-screen bg-gray-50 pb-24">
       {/* HEADER STICKY */}
-      <div className="bg-white sticky top-0 z-10 border-b border-gray-100 px-4 py-4 flex items-center gap-3">
-        <button 
-          onClick={onBack}
-          className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors"
-        >
-          <ArrowLeft className="w-6 h-6 text-gray-700" />
-        </button>
-        <h1 className="text-xl font-bold text-gray-900">Analisi Finanziaria</h1>
+      <div className="bg-white sticky top-0 z-10 border-b border-gray-100 px-4 py-4 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+            <button onClick={onBack} className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors">
+            <ArrowLeft className="w-6 h-6 text-gray-700" />
+            </button>
+            <h1 className="text-xl font-bold text-gray-900">Analisi Finanziaria</h1>
+        </div>
+        
+        {/* Selettori Data Globali */}
+        <div className="flex gap-2">
+            <div className="relative">
+            <select
+                value={selectedMonth}
+                onChange={(e) => setSelectedMonth(Number(e.target.value))}
+                className="appearance-none bg-gray-50 border border-transparent hover:border-gray-200 text-gray-700 text-xs font-bold py-2 pl-3 pr-6 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer transition-all"
+            >
+                {months.map((month) => (
+                <option key={month} value={month}>
+                    {new Date(2000, month - 1).toLocaleDateString('it-IT', { month: 'short' }).toUpperCase()}
+                </option>
+                ))}
+            </select>
+            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-1.5 text-gray-500">
+                <Calendar className="w-3 h-3" />
+            </div>
+            </div>
+            
+            <div className="relative">
+            <select
+                value={selectedYear}
+                onChange={(e) => setSelectedYear(Number(e.target.value))}
+                className="appearance-none bg-gray-50 border border-transparent hover:border-gray-200 text-gray-700 text-xs font-bold py-2 pl-3 pr-6 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer transition-all"
+            >
+                {years.map((year) => (
+                <option key={year} value={year}>{year}</option>
+                ))}
+            </select>
+            </div>
+        </div>
       </div>
 
       <div className="max-w-md mx-auto px-4 py-6 space-y-6">
         
-        {/* CARD SPESE MENSILI */}
+        {/* CARD ENTRATE CATEGORIE */}
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
-          <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center gap-2">
-                <div className="p-1.5 bg-purple-50 rounded-lg">
-                    <PieChartIcon className="w-4 h-4 text-purple-600" />
+          <div className="flex items-center gap-2 mb-6">
+                <div className="p-1.5 bg-emerald-50 rounded-lg">
+                    <TrendingUp className="w-4 h-4 text-emerald-600" />
                 </div>
-                <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Spese Categorie</h2>
+                <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Entrate per Categoria</h2>
+          </div>
+
+          {loading ? (
+            <div className="h-64 flex flex-col items-center justify-center space-y-3 animate-pulse">
+               <div className="w-32 h-32 bg-gray-100 rounded-full"></div>
             </div>
-            
-            {/* Selettori Data Custom */}
-            <div className="flex gap-2">
-              <div className="relative">
-                <select
-                  value={selectedMonth}
-                  onChange={(e) => setSelectedMonth(Number(e.target.value))}
-                  className="appearance-none bg-gray-50 border border-transparent hover:border-gray-200 text-gray-700 text-xs font-bold py-2 pl-3 pr-6 rounded-lg outline-none focus:ring-2 focus:ring-purple-500 cursor-pointer transition-all"
-                >
-                  {months.map((month) => (
-                    <option key={month} value={month}>
-                      {new Date(2000, month - 1).toLocaleDateString('it-IT', { month: 'short' }).toUpperCase()}
-                    </option>
-                  ))}
-                </select>
-                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-1.5 text-gray-500">
-                  <Calendar className="w-3 h-3" />
+          ) : incomeByCategory.length === 0 ? (
+            <div className="h-64 flex flex-col items-center justify-center text-center border-2 border-dashed border-gray-100 rounded-xl">
+              <div className="p-3 bg-gray-50 rounded-full mb-2">
+                 <BarChart3 className="w-6 h-6 text-gray-300" />
+              </div>
+              <p className="text-gray-400 text-sm font-medium">Nessuna entrata in questo periodo</p>
+            </div>
+          ) : (
+            <div className="h-[300px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={incomeByCategory}
+                    cx="50%"
+                    cy="45%"
+                    innerRadius={60}
+                    outerRadius={80}
+                    paddingAngle={5}
+                    dataKey="value"
+                    label={renderCustomizedLabel}
+                    labelLine={true}
+                  >
+                    {incomeByCategory.map((entry, index) => (
+                      <Cell key={`cell-inc-${index}`} fill={entry.color} stroke="none" />
+                    ))}
+                  </Pie>
+                  <Tooltip 
+                    formatter={(value: number | undefined) => formatCurrency(value || 0)}
+                    contentStyle={{ backgroundColor: 'white', borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                  />
+                  <Legend 
+                     layout="horizontal" 
+                     verticalAlign="bottom" 
+                     align="center"
+                     iconType="circle"
+                     wrapperStyle={{ fontSize: '11px', paddingTop: '20px' }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </div>
+
+        {/* CARD SPESE CATEGORIE */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+          <div className="flex items-center gap-2 mb-6">
+                <div className="p-1.5 bg-rose-50 rounded-lg">
+                    <TrendingDown className="w-4 h-4 text-rose-600" />
                 </div>
-              </div>
-              
-              <div className="relative">
-                <select
-                  value={selectedYear}
-                  onChange={(e) => setSelectedYear(Number(e.target.value))}
-                  className="appearance-none bg-gray-50 border border-transparent hover:border-gray-200 text-gray-700 text-xs font-bold py-2 pl-3 pr-6 rounded-lg outline-none focus:ring-2 focus:ring-purple-500 cursor-pointer transition-all"
-                >
-                  {years.map((year) => (
-                    <option key={year} value={year}>
-                      {year}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
+                <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Spese per Categoria</h2>
           </div>
 
           {loading ? (
@@ -349,9 +412,11 @@ export default function Statistics({ onBack, primaryColor }: StatisticsProps) {
                     outerRadius={80}
                     paddingAngle={5}
                     dataKey="value"
+                    label={renderCustomizedLabel} // Etichetta percentuale
+                    labelLine={true}
                   >
                     {expensesByCategory.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} stroke="none" />
+                      <Cell key={`cell-exp-${index}`} fill={entry.color} stroke="none" />
                     ))}
                   </Pie>
                   <Tooltip 
@@ -371,7 +436,7 @@ export default function Statistics({ onBack, primaryColor }: StatisticsProps) {
           )}
         </div>
 
-        {/* NUOVA CARD: ASSET ALLOCATION (Investimenti) */}
+        {/* CARD ASSET ALLOCATION */}
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
           <div className="flex items-center gap-2 mb-6">
               <div className="p-1.5 bg-emerald-50 rounded-lg">
@@ -399,6 +464,8 @@ export default function Statistics({ onBack, primaryColor }: StatisticsProps) {
                     outerRadius={80}
                     paddingAngle={5}
                     dataKey="value"
+                    label={renderCustomizedLabel} // Etichetta percentuale
+                    labelLine={true}
                   >
                     {investmentData.map((entry, index) => (
                       <Cell key={`cell-inv-${index}`} fill={entry.color} stroke="none" />

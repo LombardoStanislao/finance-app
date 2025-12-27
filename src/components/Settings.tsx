@@ -262,7 +262,8 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
         .from('categories')
         .insert({
           name: newCategoryName,
-          budget_limit: newCategoryBudget ? parseFloat(newCategoryBudget) : null,
+          // Se è income, non salviamo il budget (o lo mettiamo a null)
+          budget_limit: newCategoryType === 'expense' && newCategoryBudget ? parseFloat(newCategoryBudget) : null,
           user_id: user.id,
           parent_id: newCategoryParent || null,
           type: newCategoryType,
@@ -309,7 +310,8 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     try {
       const updateData = {
         name: editCategoryName.trim(),
-        budget_limit: editCategoryBudget ? parseFloat(editCategoryBudget) : null,
+        // Se è income, budget a null
+        budget_limit: editCategoryType === 'expense' && editCategoryBudget ? parseFloat(editCategoryBudget) : null,
         parent_id: editCategoryParent || null,
         type: editCategoryType,
       }
@@ -541,13 +543,17 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
                               <option key={c.id} value={c.id}>{c.name}</option>
                             ))}
                          </select>
-                         <input
-                            type="number"
-                            value={newCategoryBudget}
-                            onChange={(e) => setNewCategoryBudget(e.target.value)}
-                            className="w-24 p-3 bg-gray-50 rounded-xl text-sm font-medium outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all"
-                            placeholder="Budget"
-                        />
+                         
+                         {/* Campo Budget VISIBILE SOLO SE è Expense */}
+                         {newCategoryType === 'expense' && (
+                             <input
+                                type="number"
+                                value={newCategoryBudget}
+                                onChange={(e) => setNewCategoryBudget(e.target.value)}
+                                className="w-24 p-3 bg-gray-50 rounded-xl text-sm font-medium outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all"
+                                placeholder="Budget"
+                            />
+                         )}
                     </div>
 
                     {categoryError && <p className="text-xs text-red-500 ml-1">{categoryError}</p>}
@@ -566,7 +572,7 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
         
         {/* ACTION BUTTONS BOTTOM */}
         <div className="space-y-3">
-            {/* BOTTONE SALVA PROFILO - Spostato qui */}
+            {/* BOTTONE SALVA PROFILO */}
             <button
               onClick={handleSaveProfile}
               disabled={loading}
@@ -622,13 +628,17 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
                       <option key={c.id} value={c.id}>{c.name}</option>
                     ))}
                  </select>
-                 <input
-                    type="number"
-                    value={editCategoryBudget}
-                    onChange={e => setEditCategoryBudget(e.target.value)}
-                    className="w-24 p-3 bg-gray-50 rounded-xl font-medium outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all"
-                    placeholder="Budget"
-                 />
+                 
+                 {/* Campo Budget VISIBILE SOLO SE è Expense */}
+                 {editCategoryType === 'expense' && (
+                     <input
+                        type="number"
+                        value={editCategoryBudget}
+                        onChange={e => setEditCategoryBudget(e.target.value)}
+                        className="w-24 p-3 bg-gray-50 rounded-xl font-medium outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all"
+                        placeholder="Budget"
+                     />
+                 )}
                </div>
 
                <button

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { X, TrendingUp, TrendingDown, ArrowRightLeft, Calendar, AlignLeft, Wallet, PieChart, Repeat } from 'lucide-react'
 import { supabase, type Category, type Bucket, type Investment } from '../lib/supabase'
-import { formatCurrency, cn } from '../lib/utils'
+import { cn } from '../lib/utils'
 
 interface TransactionFormProps {
   isOpen: boolean
@@ -15,7 +15,6 @@ interface CategoryWithChildren extends Category {
   children?: CategoryWithChildren[]
 }
 
-// Estendiamo Bucket per includere target_amount se non è già nel tipo base
 interface BucketWithTarget extends Bucket {
   target_amount?: number
 }
@@ -93,18 +92,26 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
     setTransferDestination('')
   }
 
+  // Effect per filtrare le categorie e gestire il default (solo se necessario)
   useEffect(() => {
     if (categoryTree.length === 0) return
+    
     const filtered = categoryTree.filter(cat => cat.type === type)
     setFilteredCategoryTree(filtered)
     
+    // Controlla se la categoria attuale è valida per il tipo corrente
+    // Se stiamo modificando, categoryId è già settato correttamente dall'altro useEffect
     const currentCategory = categories.find(c => c.id === categoryId)
+    
+    // Resetta a default SOLO se:
+    // 1. Non c'è una categoria selezionata
+    // 2. OPPURE la categoria selezionata non appartiene al tipo corrente (es. passo da Entrata a Uscita)
     if (!currentCategory || currentCategory.type !== type) {
       const firstMatch = categories.find(c => c.type === type)
       if (firstMatch) setCategoryId(firstMatch.id)
       else setCategoryId('')
     }
-  }, [type, categoryTree])
+  }, [type, categoryTree, categories]) // Aggiunto categories alle dipendenze per sicurezza
 
   function buildCategoryTree(categories: Category[]): CategoryWithChildren[] {
     const categoryMap = new Map<string, CategoryWithChildren>()
@@ -153,12 +160,8 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
       setCategories(categoriesData)
       const tree = buildCategoryTree(categoriesData)
       setCategoryTree(tree)
-      const filtered = tree.filter(cat => cat.type === type)
-      setFilteredCategoryTree(filtered)
-      if (!categoryId) {
-         const firstMatch = categoriesData.find(c => c.type === type)
-         if (firstMatch) setCategoryId(firstMatch.id)
-      }
+      // FIX: Rimosso blocco che resettava categoryId qui.
+      // La gestione del default è delegata interamente all'useEffect [type, categoryTree]
     } catch (error) { console.error(error) }
   }
 
@@ -233,7 +236,6 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
       }
       // 2. Entrata (Income)
       else if (type === 'income') {
-        // A. Transazione principale (Tutto entra in liquidità inizialmente)
         const { error: tError } = await supabase.from('transactions').insert({
             amount: amountNumber,
             category_id: categoryId,
@@ -245,52 +247,70 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
           })
         if (tError) throw tError
 
-        // B. Divisione Automatica con HARD CAP
+        // Divisione Automatica a CASCATA
         if (applyAutoSplit) {
             const bucketsWithDistribution = buckets.filter(b => (b.distribution_percentage || 0) > 0)
+            let allocations = new Map<string, number>()
+            let eligibleBuckets = new Set<string>() 
             
+            bucketsWithDistribution.forEach(b => {
+                const theoretical = (amountNumber * (b.distribution_percentage || 0)) / 100
+                allocations.set(b.id, theoretical)
+                eligibleBuckets.add(b.id)
+            })
+
+            let loop = true
+            while (loop && eligibleBuckets.size > 0) {
+                loop = false 
+                let excessPool = 0
+
+                for (const bucket of bucketsWithDistribution) {
+                    if (!eligibleBuckets.has(bucket.id)) continue
+                    const currentAlloc = allocations.get(bucket.id) || 0
+                    const target = bucket.target_amount || 0
+                    const startBalance = bucket.current_balance || 0
+                    
+                    if (target > 0) {
+                        const space = Math.max(0, target - startBalance)
+                        if (currentAlloc > space) {
+                            excessPool += (currentAlloc - space)
+                            allocations.set(bucket.id, space)
+                            eligibleBuckets.delete(bucket.id)
+                            loop = true
+                        }
+                    }
+                }
+
+                if (excessPool > 0.01 && eligibleBuckets.size > 0) {
+                    for (const bucket of bucketsWithDistribution) {
+                        if (eligibleBuckets.has(bucket.id)) {
+                            const weight = bucket.distribution_percentage || 0
+                            const share = (excessPool * weight) / 100
+                            allocations.set(bucket.id, (allocations.get(bucket.id) || 0) + share)
+                        }
+                    }
+                    loop = true 
+                }
+            }
+
             for (const bucket of bucketsWithDistribution) {
-              // 1. Calcola quanto DOVREBBE andare in base alla %
-              const theoreticalAmount = (amountNumber * (bucket.distribution_percentage || 0)) / 100
-              
-              // 2. Calcola l'importo REALE basato sul target (Hard Cap)
-              let actualAmount = theoreticalAmount
-              const target = bucket.target_amount || 0
-              const currentBalance = bucket.current_balance || 0
-
-              if (target > 0) {
-                  const spaceRemaining = Math.max(0, target - currentBalance)
-                  // Se lo spazio rimasto è minore di quanto calcolato, taglia l'importo
-                  if (theoreticalAmount > spaceRemaining) {
-                      actualAmount = spaceRemaining
-                  }
-              }
-
-              // Se l'importo reale da versare è > 0, procedi
-              if (actualAmount > 0) {
-                  const newBalance = currentBalance + actualAmount
-                  let updateData: any = { current_balance: newBalance }
-                  
-                  // Se raggiunto o superato il target, disattiva distribuzione futura
-                  if (target > 0 && newBalance >= target) {
-                     updateData.distribution_percentage = 0
-                  }
-
-                  // Crea transazione trasferimento per l'importo REALE
-                  // (Se abbiamo tagliato l'importo, il resto rimane implicitamente nella liquidità)
-                  await supabase.from('transactions').insert({
-                      amount: -actualAmount,
-                      date: new Date(date).toISOString(),
-                      description: `Distribuzione automatica a ${bucket.name}`,
-                      type: 'transfer',
-                      bucket_id: bucket.id,
-                      user_id: user.id,
-                    })
-                  
-                  // Aggiorna bucket
-                  await supabase.from('buckets').update(updateData).eq('id', bucket.id)
-              } 
-              // Se actualAmount è 0 (bucket già pieno), non facciamo nulla e i soldi restano in liquidità
+                const finalAmount = allocations.get(bucket.id) || 0
+                if (finalAmount > 0) {
+                    const newBalance = (bucket.current_balance || 0) + finalAmount
+                    let updateData: any = { current_balance: newBalance }
+                    if ((bucket.target_amount || 0) > 0 && newBalance >= (bucket.target_amount || 0)) {
+                       updateData.distribution_percentage = 0
+                    }
+                    await supabase.from('transactions').insert({
+                        amount: -finalAmount,
+                        date: new Date(date).toISOString(),
+                        description: `Distribuzione automatica a ${bucket.name}`,
+                        type: 'transfer',
+                        bucket_id: bucket.id,
+                        user_id: user.id,
+                      })
+                    await supabase.from('buckets').update(updateData).eq('id', bucket.id)
+                }
             }
         }
       }
@@ -328,29 +348,23 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
             if (tError) throw tError
         }
 
-        // Aggiorna Sorgente
         if (transferSource !== 'unassigned' && transferSource) {
           const sb = buckets.find(b => b.id === transferSource)
           if (sb) await supabase.from('buckets').update({ current_balance: (sb.current_balance || 0) - amountNumber }).eq('id', transferSource)
         }
 
-        // Aggiorna Destinazione
         if (transferDestinationType === 'investment') {
           const inv = investments.find(i => i.id === transferDestination)
           if (inv) await supabase.from('investments').update({ current_value: (inv.current_value || 0) + amountNumber }).eq('id', transferDestination)
         } else if (transferDestination !== 'unassigned' && transferDestination) {
           const db = buckets.find(b => b.id === transferDestination)
           if (db) {
-             // Anche qui applichiamo la logica del target (se trasferisci manualmente più del necessario)
-             // Ma di solito manuale si lascia fare. Qui ho lasciato che se raggiungi target va a 0 la %.
              const newBalance = (db.current_balance || 0) + amountNumber
              const target = db.target_amount || 0
              let updateData: any = { current_balance: newBalance }
-             
              if (target > 0 && newBalance >= target) {
                  updateData.distribution_percentage = 0
              }
-             
              await supabase.from('buckets').update(updateData).eq('id', transferDestination)
           }
         }
@@ -368,7 +382,6 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
 
   if (!isOpen) return null
 
-  // Styles
   const getActiveTabClass = (tabType: string) => {
     if (type !== tabType) return "bg-gray-50 text-gray-500 hover:bg-gray-100 border-transparent"
     if (tabType === 'income') return "bg-emerald-50 text-emerald-600 border-emerald-100 shadow-sm"
@@ -377,11 +390,17 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 backdrop-blur-sm animate-in fade-in">
-      <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl max-h-[95vh] overflow-y-auto shadow-2xl animate-in slide-in-from-bottom-10 duration-300">
+    <div 
+        className="fixed inset-0 bg-black/60 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 backdrop-blur-sm animate-in fade-in"
+        onClick={onClose}
+    >
+      <div 
+        className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl max-h-[90vh] flex flex-col shadow-2xl animate-in slide-in-from-bottom-10 duration-300"
+        onClick={(e) => e.stopPropagation()}
+      >
         
-        {/* Header */}
-        <div className="sticky top-0 bg-white/80 backdrop-blur-md border-b border-gray-100 px-6 py-4 flex items-center justify-between z-10">
+        {/* Header - FISSO */}
+        <div className="shrink-0 bg-white border-b border-gray-100 px-6 py-4 flex items-center justify-between rounded-t-3xl sm:rounded-t-3xl z-10">
           <h2 className="text-lg font-bold text-gray-900">
             {editingId ? 'Modifica' : 'Nuova Transazione'}
           </h2>
@@ -390,185 +409,191 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-6">
-          {error && <div className="p-3 bg-red-50 text-red-600 text-sm rounded-xl">{error}</div>}
+        {/* Content - SCROLLABILE INDIPENDENTEMENTE */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+            <form id="transaction-form" onSubmit={handleSubmit} className="space-y-6">
+            {error && <div className="p-3 bg-red-50 text-red-600 text-sm rounded-xl">{error}</div>}
 
-          {/* Type Selector */}
-          <div className="grid grid-cols-3 gap-2">
-            <button type="button" onClick={() => setType('expense')} className={cn("flex flex-col items-center justify-center py-3 rounded-2xl border-2 transition-all gap-1", getActiveTabClass('expense'))}>
-              <TrendingDown className="w-5 h-5" />
-              <span className="text-xs font-bold">Uscita</span>
-            </button>
-            <button type="button" onClick={() => setType('income')} className={cn("flex flex-col items-center justify-center py-3 rounded-2xl border-2 transition-all gap-1", getActiveTabClass('income'))}>
-              <TrendingUp className="w-5 h-5" />
-              <span className="text-xs font-bold">Entrata</span>
-            </button>
-            <button type="button" onClick={() => setType('transfer')} className={cn("flex flex-col items-center justify-center py-3 rounded-2xl border-2 transition-all gap-1", getActiveTabClass('transfer'))}>
-              <ArrowRightLeft className="w-5 h-5" />
-              <span className="text-xs font-bold">Transfer</span>
-            </button>
-          </div>
+            {/* Type Selector */}
+            <div className="grid grid-cols-3 gap-2">
+                <button type="button" onClick={() => setType('expense')} className={cn("flex flex-col items-center justify-center py-3 rounded-2xl border-2 transition-all gap-1", getActiveTabClass('expense'))}>
+                <TrendingDown className="w-5 h-5" />
+                <span className="text-xs font-bold">Uscita</span>
+                </button>
+                <button type="button" onClick={() => setType('income')} className={cn("flex flex-col items-center justify-center py-3 rounded-2xl border-2 transition-all gap-1", getActiveTabClass('income'))}>
+                <TrendingUp className="w-5 h-5" />
+                <span className="text-xs font-bold">Entrata</span>
+                </button>
+                <button type="button" onClick={() => setType('transfer')} className={cn("flex flex-col items-center justify-center py-3 rounded-2xl border-2 transition-all gap-1", getActiveTabClass('transfer'))}>
+                <ArrowRightLeft className="w-5 h-5" />
+                <span className="text-xs font-bold">Transfer</span>
+                </button>
+            </div>
 
-          {/* Amount Hero */}
-          <div className="relative">
-             <label className="text-xs font-bold text-gray-400 uppercase ml-1 mb-1 block">Importo</label>
-             <div className="relative flex items-center">
-                <span className="absolute left-4 text-3xl font-bold text-gray-300">€</span>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                  className="w-full pl-10 pr-4 py-4 text-4xl font-bold text-gray-900 bg-gray-50 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all placeholder:text-gray-200"
-                  placeholder="0.00"
-                  autoFocus={!editingId}
-                />
-             </div>
-          </div>
-
-          <div className="space-y-4">
-            
-            {/* Category */}
-            {type !== 'transfer' && (
-              <div>
-                <label className="text-xs font-bold text-gray-400 uppercase ml-1 mb-1 block">Categoria</label>
-                <div className="relative">
-                    <PieChart className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                    <select
-                        value={categoryId}
-                        onChange={(e) => setCategoryId(e.target.value)}
-                        required
-                        className="w-full pl-12 pr-4 py-3.5 bg-gray-50 text-gray-900 font-medium rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white appearance-none"
-                    >
-                        {filteredCategoryTree.length === 0 ? (
-                        <option value="">Caricamento...</option>
-                        ) : (
-                        flattenCategories(filteredCategoryTree).map((cat) => (
-                            <option key={cat.id} value={cat.id}>{cat.name}</option>
-                        ))
-                        )}
-                    </select>
+            {/* Amount Hero */}
+            <div className="relative">
+                <label className="text-xs font-bold text-gray-400 uppercase ml-1 mb-1 block">Importo</label>
+                <div className="relative flex items-center">
+                    <span className="absolute left-4 text-3xl font-bold text-gray-300">€</span>
+                    <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    className="w-full pl-10 pr-4 py-4 text-4xl font-bold text-gray-900 bg-gray-50 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all placeholder:text-gray-200"
+                    placeholder="0.00"
+                    autoFocus={!editingId}
+                    />
                 </div>
-              </div>
-            )}
+            </div>
 
-            {/* Transfer Fields */}
-            {type === 'transfer' && (
-                <div className="p-4 bg-blue-50 rounded-2xl space-y-4 border border-blue-100">
-                    <div>
-                        <label className="text-xs font-bold text-blue-400 uppercase ml-1 mb-1 block">Da (Sorgente)</label>
+            <div className="space-y-4">
+                {/* Category */}
+                {type !== 'transfer' && (
+                <div>
+                    <label className="text-xs font-bold text-gray-400 uppercase ml-1 mb-1 block">Categoria</label>
+                    <div className="relative">
+                        <PieChart className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
                         <select
-                            value={transferSource}
-                            onChange={(e) => setTransferSource(e.target.value)}
-                            className="w-full px-4 py-3 bg-white text-gray-900 font-medium rounded-xl border-none outline-none focus:ring-2 focus:ring-blue-500"
+                            value={categoryId}
+                            onChange={(e) => setCategoryId(e.target.value)}
+                            required
+                            className="w-full pl-12 pr-4 py-3.5 bg-gray-50 text-gray-900 font-medium rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white appearance-none"
                         >
-                            <option value="">Seleziona...</option>
-                            <option value="unassigned">Liquidità Principale</option>
-                            {buckets.map(b => <option key={b.id} value={b.id}>{b.name} (€{b.current_balance})</option>)}
-                        </select>
-                    </div>
-                    
-                    <div className="flex justify-center -my-2 relative z-10">
-                        <div className="bg-white p-1.5 rounded-full shadow-sm border border-gray-100">
-                            <ArrowRightLeft className="w-4 h-4 text-blue-500" />
-                        </div>
-                    </div>
-
-                    <div>
-                        <div className="flex gap-2 mb-2">
-                            <button type="button" onClick={() => setTransferDestinationType('investment')} className={cn("flex-1 text-xs py-1.5 rounded-lg font-bold transition-all", transferDestinationType === 'investment' ? "bg-blue-600 text-white shadow-md" : "bg-white text-gray-500")}>Investimento</button>
-                            <button type="button" onClick={() => setTransferDestinationType('bucket')} className={cn("flex-1 text-xs py-1.5 rounded-lg font-bold transition-all", transferDestinationType === 'bucket' ? "bg-blue-600 text-white shadow-md" : "bg-white text-gray-500")}>Altro Bucket</button>
-                        </div>
-                        <label className="text-xs font-bold text-blue-400 uppercase ml-1 mb-1 block">Verso (Destinazione)</label>
-                        <select
-                            value={transferDestination}
-                            onChange={(e) => setTransferDestination(e.target.value)}
-                            className="w-full px-4 py-3 bg-white text-gray-900 font-medium rounded-xl border-none outline-none focus:ring-2 focus:ring-blue-500"
-                        >
-                            <option value="">Seleziona...</option>
-                            {transferDestinationType === 'investment' ? (
-                                investments.map(i => <option key={i.id} value={i.id}>{i.type} (€{i.current_value})</option>)
+                            {filteredCategoryTree.length === 0 ? (
+                            <option value="">Caricamento...</option>
                             ) : (
-                                <>
-                                    <option value="unassigned">Liquidità Principale</option>
-                                    {buckets.filter(b => b.id !== transferSource).map(b => <option key={b.id} value={b.id}>{b.name} (€{b.current_balance})</option>)}
-                                </>
+                            flattenCategories(filteredCategoryTree).map((cat) => (
+                                <option key={cat.id} value={cat.id}>{cat.name}</option>
+                            ))
                             )}
                         </select>
                     </div>
                 </div>
-            )}
+                )}
 
-            {/* Date */}
-            <div>
-                <label className="text-xs font-bold text-gray-400 uppercase ml-1 mb-1 block">Data</label>
-                <div className="relative">
-                    <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                    <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full pl-12 pr-4 py-3.5 bg-gray-50 text-gray-900 font-medium rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white" />
-                </div>
-            </div>
-
-            {/* Description */}
-            <div>
-               <label className="text-xs font-bold text-gray-400 uppercase ml-1 mb-1 block">Descrizione</label>
-               <div className="relative">
-                  <AlignLeft className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                  <input
-                    type="text"
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                    className="w-full pl-12 pr-4 py-3.5 bg-gray-50 text-gray-900 font-medium rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all"
-                    placeholder="Note opzionali..."
-                  />
-               </div>
-            </div>
-
-            {/* EXPENSE: Bucket Selector */}
-            {type === 'expense' && (
-               <div>
-                  <label className="text-xs font-bold text-gray-400 uppercase ml-1 mb-1 block">Paga da Bucket (Opzionale)</label>
-                  <div className="relative">
-                      <Wallet className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                      <select
-                        value={bucketId}
-                        onChange={(e) => setBucketId(e.target.value)}
-                        className="w-full pl-12 pr-4 py-3.5 bg-gray-50 text-gray-900 font-medium rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all appearance-none"
-                      >
-                        <option value="">Liquidità Principale</option>
-                        {buckets.map(b => <option key={b.id} value={b.id}>{b.name} (€{b.current_balance})</option>)}
-                      </select>
-                  </div>
-               </div>
-            )}
-
-            {/* Auto Split Switch */}
-            {type === 'income' && buckets.some(b => (b.distribution_percentage || 0) > 0) && (
-                <label className="flex items-center justify-between p-4 bg-gray-50 rounded-2xl cursor-pointer border border-transparent hover:border-gray-200 transition-all">
-                    <div className="flex items-center gap-3">
-                        <div className="p-2 bg-indigo-100 text-indigo-600 rounded-lg">
-                            <Repeat className="w-5 h-5" />
-                        </div>
+                {/* Transfer Fields */}
+                {type === 'transfer' && (
+                    <div className="p-4 bg-blue-50 rounded-2xl space-y-4 border border-blue-100">
                         <div>
-                            <span className="font-bold text-gray-700 text-sm block">Divisione Automatica Buckets</span>
-                            <span className="text-xs text-gray-400">Distribuisce in base alle % impostate</span>
+                            <label className="text-xs font-bold text-blue-400 uppercase ml-1 mb-1 block">Da (Sorgente)</label>
+                            <select
+                                value={transferSource}
+                                onChange={(e) => setTransferSource(e.target.value)}
+                                className="w-full px-4 py-3 bg-white text-gray-900 font-medium rounded-xl border-none outline-none focus:ring-2 focus:ring-blue-500"
+                            >
+                                <option value="">Seleziona...</option>
+                                <option value="unassigned">Liquidità Principale</option>
+                                {buckets.map(b => <option key={b.id} value={b.id}>{b.name} (€{b.current_balance})</option>)}
+                            </select>
+                        </div>
+                        
+                        <div className="flex justify-center -my-2 relative z-10">
+                            <div className="bg-white p-1.5 rounded-full shadow-sm border border-gray-100">
+                                <ArrowRightLeft className="w-4 h-4 text-blue-500" />
+                            </div>
+                        </div>
+
+                        <div>
+                            <div className="flex gap-2 mb-2">
+                                <button type="button" onClick={() => setTransferDestinationType('investment')} className={cn("flex-1 text-xs py-1.5 rounded-lg font-bold transition-all", transferDestinationType === 'investment' ? "bg-blue-600 text-white shadow-md" : "bg-white text-gray-500")}>Investimento</button>
+                                <button type="button" onClick={() => setTransferDestinationType('bucket')} className={cn("flex-1 text-xs py-1.5 rounded-lg font-bold transition-all", transferDestinationType === 'bucket' ? "bg-blue-600 text-white shadow-md" : "bg-white text-gray-500")}>Altro Bucket</button>
+                            </div>
+                            <label className="text-xs font-bold text-blue-400 uppercase ml-1 mb-1 block">Verso (Destinazione)</label>
+                            <select
+                                value={transferDestination}
+                                onChange={(e) => setTransferDestination(e.target.value)}
+                                className="w-full px-4 py-3 bg-white text-gray-900 font-medium rounded-xl border-none outline-none focus:ring-2 focus:ring-blue-500"
+                            >
+                                <option value="">Seleziona...</option>
+                                {transferDestinationType === 'investment' ? (
+                                    investments.map(i => <option key={i.id} value={i.id}>{i.type} (€{i.current_value})</option>)
+                                ) : (
+                                    <>
+                                        <option value="unassigned">Liquidità Principale</option>
+                                        {buckets.filter(b => b.id !== transferSource).map(b => <option key={b.id} value={b.id}>{b.name} (€{b.current_balance})</option>)}
+                                    </>
+                                )}
+                            </select>
                         </div>
                     </div>
-                    <input type="checkbox" checked={applyAutoSplit} onChange={(e) => setApplyAutoSplit(e.target.checked)} className="w-6 h-6 rounded-md text-blue-600 focus:ring-blue-500 border-gray-300" />
-                </label>
-            )}
+                )}
 
-          </div>
+                {/* Date */}
+                <div>
+                    <label className="text-xs font-bold text-gray-400 uppercase ml-1 mb-1 block">Data</label>
+                    <div className="relative">
+                        <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full pl-12 pr-4 py-3.5 bg-gray-50 text-gray-900 font-medium rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white" />
+                    </div>
+                </div>
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full py-4 bg-gray-900 text-white rounded-2xl font-bold text-lg shadow-xl shadow-gray-200 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed mt-4"
-            style={{ backgroundColor: primaryColor.startsWith('#') ? primaryColor : undefined }}
-          >
-            {loading ? 'Salvataggio...' : 'Salva Transazione'}
-          </button>
-        </form>
+                {/* Description */}
+                <div>
+                <label className="text-xs font-bold text-gray-400 uppercase ml-1 mb-1 block">Descrizione</label>
+                <div className="relative">
+                    <AlignLeft className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                    <input
+                        type="text"
+                        value={description}
+                        onChange={(e) => setDescription(e.target.value)}
+                        className="w-full pl-12 pr-4 py-3.5 bg-gray-50 text-gray-900 font-medium rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all"
+                        placeholder="Note opzionali..."
+                    />
+                </div>
+                </div>
+
+                {/* EXPENSE: Bucket Selector */}
+                {type === 'expense' && (
+                <div>
+                    <label className="text-xs font-bold text-gray-400 uppercase ml-1 mb-1 block">Paga da Salvadanaio (Opzionale)</label>
+                    <div className="relative">
+                        <Wallet className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                        <select
+                            value={bucketId}
+                            onChange={(e) => setBucketId(e.target.value)}
+                            className="w-full pl-12 pr-4 py-3.5 bg-gray-50 text-gray-900 font-medium rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all appearance-none"
+                        >
+                            <option value="">Liquidità Principale</option>
+                            {buckets.map(b => <option key={b.id} value={b.id}>{b.name} (€{b.current_balance})</option>)}
+                        </select>
+                    </div>
+                </div>
+                )}
+
+                {/* Auto Split Switch */}
+                {type === 'income' && buckets.some(b => (b.distribution_percentage || 0) > 0) && (
+                    <label className="flex items-center justify-between p-4 bg-gray-50 rounded-2xl cursor-pointer border border-transparent hover:border-gray-200 transition-all">
+                        <div className="flex items-center gap-3">
+                            <div className="p-2 bg-indigo-100 text-indigo-600 rounded-lg">
+                                <Repeat className="w-5 h-5" />
+                            </div>
+                            <div>
+                                <span className="font-bold text-gray-700 text-sm block">Divisione Automatica Salvadanai</span>
+                                <span className="text-xs text-gray-400">Distribuisce in base alle % impostate</span>
+                            </div>
+                        </div>
+                        <input type="checkbox" checked={applyAutoSplit} onChange={(e) => setApplyAutoSplit(e.target.checked)} className="w-6 h-6 rounded-md text-blue-600 focus:ring-blue-500 border-gray-300" />
+                    </label>
+                )}
+            </div>
+            </form>
+        </div>
+
+        {/* Footer Actions - FISSO IN BASSO */}
+        <div className="shrink-0 p-6 border-t border-gray-100 bg-white rounded-b-3xl sm:rounded-b-3xl">
+            <button
+                type="submit"
+                form="transaction-form"
+                disabled={loading}
+                className="w-full py-4 bg-gray-900 text-white rounded-2xl font-bold text-lg shadow-xl shadow-gray-200 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                style={{ backgroundColor: primaryColor.startsWith('#') ? primaryColor : undefined }}
+            >
+                {loading ? 'Salvataggio...' : 'Salva Transazione'}
+            </button>
+        </div>
+
       </div>
     </div>
   )

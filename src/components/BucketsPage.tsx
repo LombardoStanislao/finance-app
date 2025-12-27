@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { ArrowLeft, Plus, Trash2, X, Target, PiggyBank, PenLine, Settings, CheckCircle2 } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, X, Target, PiggyBank, PenLine, Settings, CheckCircle2, AlertTriangle } from 'lucide-react'
 import { supabase, type Bucket } from '../lib/supabase'
 import { formatCurrency, cn } from '../lib/utils'
 
@@ -13,6 +13,9 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
   const [buckets, setBuckets] = useState<Bucket[]>([])
   const [loading, setLoading] = useState(true)
   
+  // Error State
+  const [error, setError] = useState<string | null>(null)
+
   // States per Add Form
   const [newBucketName, setNewBucketName] = useState('')
   const [newBucketDistribution, setNewBucketDistribution] = useState<string>('')
@@ -53,8 +56,22 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
     }
   }
 
+  // Calcola il totale attuale
+  const totalDistributionPercentage = buckets.reduce((sum, bucket) => {
+    return sum + (bucket.distribution_percentage || 0)
+  }, 0)
+
   async function handleAddBucket(e: React.FormEvent) {
     e.preventDefault()
+    setError(null)
+    
+    // Validazione Percentuale
+    const newPercentage = newBucketDistribution ? parseFloat(newBucketDistribution) : 0
+    if (totalDistributionPercentage + newPercentage > 100) {
+        setError(`Errore: Stai superando il 100% (Totale attuale: ${totalDistributionPercentage}%)`)
+        return
+    }
+
     setBucketLoading(true)
 
     try {
@@ -65,7 +82,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
         .from('buckets')
         .insert({
           name: newBucketName,
-          distribution_percentage: newBucketDistribution ? parseFloat(newBucketDistribution) : 0,
+          distribution_percentage: newPercentage,
           current_balance: newBucketBalance ? parseFloat(newBucketBalance) : 0,
           target_amount: newBucketTarget ? parseFloat(newBucketTarget) : 0,
           user_id: user.id,
@@ -81,7 +98,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
       loadBuckets()
     } catch (error) {
       console.error('Errore salvataggio:', error)
-      alert('Errore salvataggio bucket')
+      setError('Errore durante il salvataggio')
     } finally {
       setBucketLoading(false)
     }
@@ -90,6 +107,18 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
   async function handleUpdateBucket(e: React.FormEvent) {
     e.preventDefault()
     if (!editingBucket) return
+    setError(null)
+
+    // Validazione Percentuale (Escludendo il bucket che stiamo modificando dal totale attuale)
+    const newPercentage = editBucketDistribution ? parseFloat(editBucketDistribution) : 0
+    const otherBucketsTotal = buckets
+        .filter(b => b.id !== editingBucket.id)
+        .reduce((sum, b) => sum + (b.distribution_percentage || 0), 0)
+
+    if (otherBucketsTotal + newPercentage > 100) {
+        setError(`Errore: Il totale supererebbe il 100% (Disponibile: ${(100 - otherBucketsTotal).toFixed(1)}%)`)
+        return
+    }
 
     setBucketLoading(true)
 
@@ -98,7 +127,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
         .from('buckets')
         .update({
           name: editBucketName,
-          distribution_percentage: editBucketDistribution ? parseFloat(editBucketDistribution) : 0,
+          distribution_percentage: newPercentage,
           current_balance: editBucketBalance ? parseFloat(editBucketBalance) : 0,
           target_amount: editBucketTarget ? parseFloat(editBucketTarget) : 0,
         })
@@ -110,7 +139,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
       loadBuckets()
     } catch (error) {
       console.error('Errore aggiornamento:', error)
-      alert('Errore aggiornamento bucket')
+      setError('Errore durante l\'aggiornamento')
     } finally {
       setBucketLoading(false)
     }
@@ -131,10 +160,6 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(amount)
   }
-
-  const totalDistributionPercentage = buckets.reduce((sum, bucket) => {
-    return sum + (bucket.distribution_percentage || 0)
-  }, 0)
 
   return (
     <div className="min-h-screen bg-gray-50 pb-24">
@@ -176,7 +201,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
             <p className="text-3xl font-bold text-gray-900">
               {totalDistributionPercentage.toFixed(1)}%
             </p>
-            <p className="text-xs text-gray-400 mt-1 font-medium">
+            <p className={cn("text-xs mt-1 font-medium", totalDistributionPercentage > 100 ? "text-red-500 font-bold" : "text-gray-400")}>
               {100 - totalDistributionPercentage >= 0 
                 ? `${(100 - totalDistributionPercentage).toFixed(1)}% rimane nella Liquidità`
                 : 'Attenzione: Hai superato il 100%!'}
@@ -245,6 +270,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                                         setEditBucketDistribution((bucket.distribution_percentage || 0).toString())
                                         setEditBucketBalance((bucket.current_balance || 0).toString())
                                         setEditBucketTarget((bucket.target_amount || 0).toString())
+                                        setError(null)
                                     }}
                                     className="p-2 text-gray-300 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
                                 >
@@ -278,8 +304,12 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
 
         {/* BOTTONE AGGIUNGI */}
         <button
-          onClick={() => setIsAddFormOpen(true)}
+          onClick={() => {
+              setIsAddFormOpen(true)
+              setError(null)
+          }}
           className="w-full py-4 bg-blue-600 text-white rounded-xl font-bold shadow-lg shadow-blue-200 active:scale-95 transition-all flex items-center justify-center gap-2"
+          style={{ backgroundColor: primaryColor }}
         >
           <Plus className="w-5 h-5" />
           Nuovo Bucket
@@ -356,10 +386,19 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                 </div>
 
                 <div className="pt-2">
+                    {/* Error Message */}
+                    {error && (
+                        <div className="mb-3 p-3 bg-red-50 border border-red-100 rounded-xl flex items-center gap-2 text-red-600 text-xs font-bold animate-in fade-in slide-in-from-top-2">
+                            <AlertTriangle className="w-4 h-4 shrink-0" />
+                            {error}
+                        </div>
+                    )}
+
                     <button
                     type="submit"
                     disabled={bucketLoading}
                     className="w-full py-4 bg-blue-600 text-white font-bold rounded-2xl shadow-xl shadow-blue-100 hover:bg-blue-700 active:scale-95 transition-all disabled:opacity-50"
+                    style={{ backgroundColor: primaryColor }}
                     >
                     {bucketLoading ? 'Salvataggio...' : 'Crea Bucket'}
                     </button>
@@ -435,10 +474,19 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                 </div>
 
                 <div className="pt-2">
+                    {/* Error Message */}
+                    {error && (
+                        <div className="mb-3 p-3 bg-red-50 border border-red-100 rounded-xl flex items-center gap-2 text-red-600 text-xs font-bold animate-in fade-in slide-in-from-top-2">
+                            <AlertTriangle className="w-4 h-4 shrink-0" />
+                            {error}
+                        </div>
+                    )}
+
                     <button
                     type="submit"
                     disabled={bucketLoading}
                     className="w-full py-4 bg-blue-600 text-white font-bold rounded-2xl shadow-xl shadow-blue-100 hover:bg-blue-700 active:scale-95 transition-all disabled:opacity-50"
+                    style={{ backgroundColor: primaryColor }}
                     >
                     {bucketLoading ? 'Aggiornamento...' : 'Salva Modifiche'}
                     </button>

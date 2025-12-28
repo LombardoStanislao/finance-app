@@ -66,7 +66,12 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
 
       setCategories(categoriesList)
       setBuckets(bucketsList)
-      setRecentTransactions(transactions.slice(0, 5))
+
+      // FILTRO: Nascondi le distribuzioni automatiche dalla lista recente
+      const filteredRecent = transactions.filter(t => 
+        !t.description?.startsWith('Distribuzione automatica')
+      )
+      setRecentTransactions(filteredRecent.slice(0, 5))
 
       // 2. Calcoli Liquidità
       const totalLiquidity = transactions.reduce((sum, t) => sum + (Number(t.amount) || 0), 0)
@@ -132,11 +137,89 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
     }
   }
 
+  // --- LOGICA DI ROLLBACK PER LA CANCELLAZIONE ---
   async function handleDeleteTransaction(transaction: Transaction, e: React.MouseEvent) {
     e.stopPropagation()
-    if (!window.confirm('Eliminare?')) return
-    const { error } = await supabase.from('transactions').delete().eq('id', transaction.id)
-    if (!error) fetchData()
+    if (!window.confirm('Eliminare questa transazione? L\'operazione annullerà anche eventuali movimenti collegati (es. distribuzioni salvadanai).')) return
+
+    try {
+        const { data: { user } } = await supabase.auth.getUser()
+        if(!user) return
+
+        // CASO 1: Cancellazione ENTRATA (Potrebbe avere distribuzioni automatiche)
+        if (transaction.type === 'income') {
+            // Cerchiamo le distribuzioni figlie create nello stesso istante (con tolleranza)
+            const txTime = new Date(transaction.created_at).getTime()
+            const timeStart = new Date(txTime - 2000).toISOString() // -2 sec
+            const timeEnd = new Date(txTime + 5000).toISOString() // +5 sec
+
+            const { data: children } = await supabase
+                .from('transactions')
+                .select('*')
+                .eq('user_id', user.id)
+                .eq('type', 'transfer')
+                .ilike('description', 'Distribuzione automatica%')
+                .gte('created_at', timeStart)
+                .lte('created_at', timeEnd)
+
+            if (children && children.length > 0) {
+                // Per ogni figlio, dobbiamo TOGLIERE i soldi dal bucket dove erano finiti
+                for (const child of children) {
+                    if (child.bucket_id) {
+                        const { data: bucket } = await supabase
+                            .from('buckets')
+                            .select('current_balance')
+                            .eq('id', child.bucket_id)
+                            .single()
+                        
+                        if (bucket) {
+                            // child.amount è negativo (uscita dalla liquidità), quindi il valore assoluto è quanto è entrato nel bucket.
+                            // Sottraiamo questo valore per annullare l'operazione.
+                            const amountAddedToBucket = Math.abs(child.amount)
+                            const newBalance = Math.max(0, (bucket.current_balance || 0) - amountAddedToBucket)
+                            
+                            await supabase
+                                .from('buckets')
+                                .update({ current_balance: newBalance })
+                                .eq('id', child.bucket_id)
+                        }
+                    }
+                    // Eliminiamo la transazione di distribuzione
+                    await supabase.from('transactions').delete().eq('id', child.id)
+                }
+            }
+        }
+
+        // CASO 2: Cancellazione USCITA (Pagata con un Bucket)
+        else if (transaction.type === 'expense' && transaction.bucket_id) {
+            const { data: bucket } = await supabase
+                .from('buckets')
+                .select('current_balance')
+                .eq('id', transaction.bucket_id)
+                .single()
+
+            if (bucket) {
+                // Se annullo una spesa, i soldi devono TORNARE nel bucket
+                const amountSpent = Math.abs(transaction.amount)
+                const newBalance = (bucket.current_balance || 0) + amountSpent
+                
+                await supabase
+                    .from('buckets')
+                    .update({ current_balance: newBalance })
+                    .eq('id', transaction.bucket_id)
+            }
+        }
+
+        // Infine eliminiamo la transazione principale
+        const { error } = await supabase.from('transactions').delete().eq('id', transaction.id)
+        if (error) throw error
+
+        // Ricarichiamo tutto per aggiornare le UI (Patrimonio, Liquidità, Budget...)
+        fetchData()
+    } catch (error) {
+        console.error('Error deleting transaction:', error)
+        alert('Errore durante l\'eliminazione')
+    }
   }
 
   function getCategoryName(id: string) { return categories.find(c => c.id === id)?.name || 'Sconosciuta' }
@@ -158,18 +241,15 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
 
       <div className="max-w-md mx-auto px-4 py-6 space-y-8">
         
-        {/* HERO CARD - DINAMICA COLORE TEMA */}
+        {/* HERO CARD */}
         <div 
             className="rounded-3xl p-6 shadow-lg text-white relative overflow-hidden transition-colors duration-300"
             style={{ 
                 backgroundColor: primaryColor,
-                boxShadow: `0 20px 25px -5px ${primaryColor}40` // Ombra colorata
+                boxShadow: `0 20px 25px -5px ${primaryColor}40`
             }}
         >
-            {/* Overlay Sfumatura per dare profondità */}
             <div className="absolute inset-0 bg-gradient-to-br from-white/10 to-black/10 pointer-events-none" />
-            
-            {/* Background Decoration */}
             <div className="absolute top-0 right-0 w-32 h-32 bg-white opacity-10 rounded-full -mr-10 -mt-10 blur-2xl"></div>
             
             <div className="relative z-10">
@@ -274,27 +354,33 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
         <div>
           <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-3 px-1">Attività Recente</h2>
           <div className="space-y-3">
-            {recentTransactions.map((t) => (
-                <div key={t.id} onClick={() => { setEditingTransaction(t); setIsTransactionFormOpen(true) }} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex items-start justify-between active:scale-[0.99] transition-transform cursor-pointer">
-                  <div className="flex items-start gap-4 flex-1 min-w-0">
-                    <div className={cn("w-10 h-10 rounded-full flex items-center justify-center shrink-0 mt-1", t.type === 'income' ? "bg-emerald-50 text-emerald-600" : t.type === 'transfer' ? "bg-blue-50 text-blue-600" : "bg-rose-50 text-rose-600")}>
-                        {t.type === 'income' ? <TrendingUp className="w-5 h-5" /> : t.type === 'transfer' ? <ArrowRightLeft className="w-5 h-5" /> : <TrendingDown className="w-5 h-5" />}
-                    </div>
-                    <div className="flex-1 min-w-0 pr-2">
-                      <div className="flex flex-wrap items-center gap-2 mb-1">
-                        <h3 className="font-bold text-gray-900 leading-tight break-words">{t.description || (t.type === 'transfer' ? 'Trasferimento' : getCategoryName(t.category_id || ''))}</h3>
-                      </div>
-                      <p className="text-xs text-gray-400">{formatDate(t.date)}</p>
-                    </div>
-                  </div>
-                  <div className="flex flex-col items-end gap-2 shrink-0 ml-2">
-                    <span className={cn("font-bold text-base whitespace-nowrap", t.type === 'income' ? "text-emerald-600" : t.type === 'transfer' ? "text-gray-600" : "text-rose-600")}>
-                      {t.type === 'income' ? '+' : t.type === 'expense' ? '-' : ''} {formatCurrency(Math.abs(t.amount))}
-                    </span>
-                    <button onClick={(e) => handleDeleteTransaction(t, e)} className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"><Trash2 className="w-4 h-4" /></button>
-                  </div>
+            {recentTransactions.length === 0 ? (
+                <div className="text-center py-8 text-gray-400 text-sm bg-white rounded-2xl border border-dashed border-gray-100">
+                    Nessuna attività recente
                 </div>
-            ))}
+            ) : (
+                recentTransactions.map((t) => (
+                    <div key={t.id} onClick={() => { setEditingTransaction(t); setIsTransactionFormOpen(true) }} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex items-start justify-between active:scale-[0.99] transition-transform cursor-pointer">
+                    <div className="flex items-start gap-4 flex-1 min-w-0">
+                        <div className={cn("w-10 h-10 rounded-full flex items-center justify-center shrink-0 mt-1", t.type === 'income' ? "bg-emerald-50 text-emerald-600" : t.type === 'transfer' ? "bg-blue-50 text-blue-600" : "bg-rose-50 text-rose-600")}>
+                            {t.type === 'income' ? <TrendingUp className="w-5 h-5" /> : t.type === 'transfer' ? <ArrowRightLeft className="w-5 h-5" /> : <TrendingDown className="w-5 h-5" />}
+                        </div>
+                        <div className="flex-1 min-w-0 pr-2">
+                        <div className="flex flex-wrap items-center gap-2 mb-1">
+                            <h3 className="font-bold text-gray-900 leading-tight break-words">{t.description || (t.type === 'transfer' ? 'Trasferimento' : getCategoryName(t.category_id || ''))}</h3>
+                        </div>
+                        <p className="text-xs text-gray-400">{formatDate(t.date)}</p>
+                        </div>
+                    </div>
+                    <div className="flex flex-col items-end gap-2 shrink-0 ml-2">
+                        <span className={cn("font-bold text-base whitespace-nowrap", t.type === 'income' ? "text-emerald-600" : t.type === 'transfer' ? "text-gray-600" : "text-rose-600")}>
+                        {t.type === 'income' ? '+' : t.type === 'expense' ? '-' : ''} {formatCurrency(Math.abs(t.amount))}
+                        </span>
+                        <button onClick={(e) => handleDeleteTransaction(t, e)} className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"><Trash2 className="w-4 h-4" /></button>
+                    </div>
+                    </div>
+                ))
+            )}
           </div>
         </div>
       </div>

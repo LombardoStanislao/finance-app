@@ -38,7 +38,7 @@ export default function Transactions({ onBack, primaryColor }: TransactionsProps
         setFilterCategory('all')
       }
     }
-  }, [filterType, filterCategory, filterSearch, dateFrom, dateTo]) // Aggiunta dipendenza date
+  }, [filterType, filterCategory, filterSearch, dateFrom, dateTo])
 
   async function loadCategories() {
     try {
@@ -78,13 +78,16 @@ export default function Transactions({ onBack, primaryColor }: TransactionsProps
       
       // Filtri Data
       if (dateFrom) query = query.gte('date', dateFrom)
-      // Per la data di fine, aggiungiamo l'orario di fine giornata per includere tutto il giorno selezionato
       if (dateTo) query = query.lte('date', `${dateTo}T23:59:59`)
 
       const { data, error } = await query
 
       if (error) throw error
-      setTransactions(data || [])
+      
+      // Filtra le distribuzioni automatiche
+      const filteredData = (data || []).filter(t => !t.description?.startsWith('Distribuzione automatica'))
+      
+      setTransactions(filteredData)
     } catch (error) {
       console.error('Error loading transactions:', error)
     } finally {
@@ -103,14 +106,77 @@ export default function Transactions({ onBack, primaryColor }: TransactionsProps
     loadTransactions()
   }
 
+  // --- LOGICA DI ROLLBACK PER LA CANCELLAZIONE ---
   async function handleDelete(transaction: Transaction, e: React.MouseEvent) {
     e.stopPropagation()
-    if (!window.confirm('Eliminare questa transazione?')) return
+    if (!window.confirm('Eliminare questa transazione? L\'operazione annullerà anche eventuali movimenti collegati.')) return
 
     try {
-      const { error } = await supabase.from('transactions').delete().eq('id', transaction.id)
-      if (error) throw error
-      loadTransactions()
+        const { data: { user } } = await supabase.auth.getUser()
+        if(!user) return
+
+        // CASO 1: Cancellazione ENTRATA
+        if (transaction.type === 'income') {
+            const txTime = new Date(transaction.created_at).getTime()
+            const timeStart = new Date(txTime - 2000).toISOString()
+            const timeEnd = new Date(txTime + 5000).toISOString()
+
+            const { data: children } = await supabase
+                .from('transactions')
+                .select('*')
+                .eq('user_id', user.id)
+                .eq('type', 'transfer')
+                .ilike('description', 'Distribuzione automatica%')
+                .gte('created_at', timeStart)
+                .lte('created_at', timeEnd)
+
+            if (children && children.length > 0) {
+                for (const child of children) {
+                    if (child.bucket_id) {
+                        const { data: bucket } = await supabase
+                            .from('buckets')
+                            .select('current_balance')
+                            .eq('id', child.bucket_id)
+                            .single()
+                        
+                        if (bucket) {
+                            const amountAddedToBucket = Math.abs(child.amount)
+                            const newBalance = Math.max(0, (bucket.current_balance || 0) - amountAddedToBucket)
+                            
+                            await supabase
+                                .from('buckets')
+                                .update({ current_balance: newBalance })
+                                .eq('id', child.bucket_id)
+                        }
+                    }
+                    await supabase.from('transactions').delete().eq('id', child.id)
+                }
+            }
+        }
+
+        // CASO 2: Cancellazione USCITA (Pagata con un Bucket)
+        else if (transaction.type === 'expense' && transaction.bucket_id) {
+            const { data: bucket } = await supabase
+                .from('buckets')
+                .select('current_balance')
+                .eq('id', transaction.bucket_id)
+                .single()
+
+            if (bucket) {
+                const amountSpent = Math.abs(transaction.amount)
+                const newBalance = (bucket.current_balance || 0) + amountSpent
+                await supabase
+                    .from('buckets')
+                    .update({ current_balance: newBalance })
+                    .eq('id', transaction.bucket_id)
+            }
+        }
+
+        // Elimina transazione principale
+        const { error } = await supabase.from('transactions').delete().eq('id', transaction.id)
+        if (error) throw error
+        
+        loadTransactions()
     } catch (error: any) {
       console.error('Error deleting transaction:', error)
       alert('Errore durante l\'eliminazione')

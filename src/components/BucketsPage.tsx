@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { ArrowLeft, Plus, Trash2, X, Target, PiggyBank, PenLine, Settings, CheckCircle2, AlertTriangle } from 'lucide-react'
+import { useState, useEffect, useMemo } from 'react'
+import { ArrowLeft, Plus, Trash2, X, Target, PiggyBank, PenLine, Settings, CheckCircle2, AlertTriangle, ArrowUpDown, Lock } from 'lucide-react'
 import { supabase, type Bucket } from '../lib/supabase'
 import { formatCurrency, cn } from '../lib/utils'
 
@@ -9,9 +9,13 @@ interface BucketsPageProps {
   primaryColor: string
 }
 
+type SortOption = 'default' | 'name' | 'progress-desc' | 'progress-asc'
+
 export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: BucketsPageProps) {
   const [buckets, setBuckets] = useState<Bucket[]>([])
   const [loading, setLoading] = useState(true)
+  const [sortBy, setSortBy] = useState<SortOption>('default')
+  const [isSortMenuOpen, setIsSortMenuOpen] = useState(false)
   
   // Error State
   const [error, setError] = useState<string | null>(null)
@@ -45,7 +49,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
         .from('buckets')
         .select('*')
         .eq('user_id', user.id)
-        .order('name')
+        .order('created_at', { ascending: true }) // Default order
 
       if (error) throw error
       setBuckets(data || [])
@@ -56,7 +60,41 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
     }
   }
 
-  // Calcola il totale attuale
+  // --- LOGICA ORDINAMENTO E SEPARAZIONE ---
+  const { activeBuckets, completedBuckets } = useMemo(() => {
+    let sorted = [...buckets]
+
+    // Applicazione Ordinamento
+    if (sortBy === 'name') {
+        sorted.sort((a, b) => a.name.localeCompare(b.name))
+    } else if (sortBy === 'progress-desc' || sortBy === 'progress-asc') {
+        sorted.sort((a, b) => {
+            const getProgress = (bucket: Bucket) => {
+                if (!bucket.target_amount || bucket.target_amount <= 0) return 0
+                return (bucket.current_balance || 0) / bucket.target_amount
+            }
+            const progA = getProgress(a)
+            const progB = getProgress(b)
+            return sortBy === 'progress-desc' ? progB - progA : progA - progB
+        })
+    }
+    // 'default' usa l'ordine originale dell'array (created_at)
+
+    // Separazione: Completati vs Attivi
+    const completed: Bucket[] = []
+    const active: Bucket[] = []
+
+    sorted.forEach(b => {
+        const isCompleted = (b.target_amount || 0) > 0 && (b.current_balance || 0) >= (b.target_amount || 0)
+        if (isCompleted) completed.push(b)
+        else active.push(b)
+    })
+
+    return { activeBuckets: active, completedBuckets: completed }
+  }, [buckets, sortBy])
+
+
+  // Calcola il totale attuale (su tutti i bucket, attivi e completati)
   const totalDistributionPercentage = buckets.reduce((sum, bucket) => {
     return sum + (bucket.distribution_percentage || 0)
   }, 0)
@@ -65,7 +103,6 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
     e.preventDefault()
     setError(null)
     
-    // Validazione Percentuale
     const newPercentage = newBucketDistribution ? parseFloat(newBucketDistribution) : 0
     if (totalDistributionPercentage + newPercentage > 100) {
         setError(`Errore: Stai superando il 100% (Totale attuale: ${totalDistributionPercentage}%)`)
@@ -109,7 +146,6 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
     if (!editingBucket) return
     setError(null)
 
-    // Validazione Percentuale (Escludendo il bucket che stiamo modificando dal totale attuale)
     const newPercentage = editBucketDistribution ? parseFloat(editBucketDistribution) : 0
     const otherBucketsTotal = buckets
         .filter(b => b.id !== editingBucket.id)
@@ -146,34 +182,20 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
   }
 
   async function handleDeleteBucket(bucketId: string) {
-    // 1. TROVA IL BUCKET E CONTROLLA IL SALDO
     const bucketToDelete = buckets.find(b => b.id === bucketId)
     
     if (bucketToDelete && (bucketToDelete.current_balance || 0) > 0) {
-      alert('Impossibile eliminare: Il salvadanaio contiene ancora del denaro. Per favore svuotalo prima (trasferisci i fondi o modifica il saldo a 0).')
-      return // Blocca l'esecuzione qui
+      alert('Impossibile eliminare: Il salvadanaio contiene ancora del denaro. Per favore svuotalo prima.')
+      return 
     }
 
-    // 2. SE VUOTO, PROCEDI CON LA CANCELLAZIONE SICURA
-    if (!confirm('Sei sicuro di voler eliminare questo salvadanaio? Lo storico delle transazioni verrà mantenuto ma scollegato.')) return
+    if (!confirm('Sei sicuro di voler eliminare questo salvadanaio?')) return
 
     try {
-      // Scollega le transazioni associate (setta bucket_id a null)
-      const { error: unlinkError } = await supabase
-        .from('transactions')
-        .update({ bucket_id: null })
-        .eq('bucket_id', bucketId)
-
+      const { error: unlinkError } = await supabase.from('transactions').update({ bucket_id: null }).eq('bucket_id', bucketId)
       if (unlinkError) throw unlinkError
-
-      // Elimina il bucket
-      const { error } = await supabase
-        .from('buckets')
-        .delete()
-        .eq('id', bucketId)
-
+      const { error } = await supabase.from('buckets').delete().eq('id', bucketId)
       if (error) throw error
-      
       loadBuckets()
     } catch (error) {
       console.error('Error deleting bucket:', error)
@@ -181,8 +203,79 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
     }
   }
 
-  const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(amount)
+  // Componente Renderizzato per singolo Bucket
+  const BucketCard = ({ bucket, completed = false }: { bucket: Bucket, completed?: boolean }) => {
+    const target = bucket.target_amount || 0
+    const progress = target > 0 ? Math.min((bucket.current_balance || 0) / target * 100, 100) : 0
+    
+    return (
+        <div className={cn("bg-white p-4 rounded-xl shadow-sm border transition-transform active:scale-[0.99]", completed ? "border-emerald-100 bg-emerald-50/30" : "border-gray-100")}>
+            <div className="flex items-center justify-between mb-3">
+                <div className="flex-1 min-w-0 pr-4">
+                    <h3 className={cn("font-bold text-lg leading-tight break-words flex items-center gap-2", completed ? "text-emerald-800" : "text-gray-900")}>
+                        {bucket.name}
+                        {completed && <CheckCircle2 className="w-4 h-4 text-emerald-500 flex-shrink-0" />}
+                    </h3>
+                    <div className="flex items-center gap-2 mt-1.5">
+                        <p className="text-xs text-gray-400 font-medium">Saldo attuale</p>
+                        {bucket.distribution_percentage > 0 && !completed && (
+                            <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[10px] rounded-md font-bold uppercase tracking-wide whitespace-nowrap">
+                            {bucket.distribution_percentage}%
+                            </span>
+                        )}
+                        {completed && (
+                            <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-700 text-[10px] rounded-md font-bold uppercase tracking-wide whitespace-nowrap flex items-center gap-1">
+                                <Lock className="w-3 h-3" /> Target Raggiunto
+                            </span>
+                        )}
+                    </div>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                    <div className="text-right">
+                        <span className={cn("font-bold text-lg whitespace-nowrap block", completed ? "text-emerald-700" : "text-gray-900")}>
+                            {formatCurrency(bucket.current_balance || 0)}
+                        </span>
+                        {target > 0 && (
+                            <span className="text-[10px] text-gray-400 font-medium">
+                                su {formatCurrency(target)}
+                            </span>
+                        )}
+                    </div>
+                    <div className="flex gap-1">
+                        <button 
+                            onClick={() => {
+                                setEditingBucket(bucket)
+                                setEditBucketName(bucket.name)
+                                setEditBucketDistribution((bucket.distribution_percentage || 0).toString())
+                                setEditBucketBalance((bucket.current_balance || 0).toString())
+                                setEditBucketTarget((bucket.target_amount || 0).toString())
+                                setError(null)
+                            }}
+                            className="p-2 text-gray-300 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
+                        >
+                            <PenLine className="w-4 h-4" />
+                        </button>
+                        <button 
+                            onClick={() => handleDeleteBucket(bucket.id)}
+                            className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                        >
+                            <Trash2 className="w-4 h-4" />
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            {/* Progress Bar */}
+            {target > 0 && (
+                <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                    <div 
+                        className={cn("h-full rounded-full transition-all duration-500", completed ? "bg-emerald-500" : "bg-blue-600")} 
+                        style={{ width: `${progress}%` }} 
+                    />
+                </div>
+            )}
+        </div>
+    )
   }
 
   return (
@@ -190,21 +283,41 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
       {/* HEADER STICKY */}
       <div className="bg-white sticky top-0 z-20 border-b border-gray-100 shadow-sm px-4 py-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
-            <button 
-            onClick={onBack}
-            className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors"
-            >
-            <ArrowLeft className="w-6 h-6 text-gray-700" />
+            <button onClick={onBack} className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors">
+               <ArrowLeft className="w-6 h-6 text-gray-700" />
             </button>
             <h1 className="text-xl font-bold text-gray-900">I tuoi Salvadanai</h1>
         </div>
-        <button
-            onClick={onOpenSettings}
-            className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full transition-colors text-gray-600 border border-gray-100 active:scale-95"
-            aria-label="Impostazioni"
-          >
-            <Settings className="w-5 h-5" strokeWidth={2} />
-        </button>
+        
+        <div className="flex gap-2">
+            {/* SORT BUTTON */}
+            <div className="relative">
+                <button
+                    onClick={() => setIsSortMenuOpen(!isSortMenuOpen)}
+                    className={cn("p-2 rounded-full transition-colors border active:scale-95", isSortMenuOpen ? "bg-blue-50 border-blue-200 text-blue-600" : "bg-gray-50 border-gray-100 text-gray-600 hover:bg-gray-100")}
+                >
+                    <ArrowUpDown className="w-5 h-5" strokeWidth={2} />
+                </button>
+                
+                {isSortMenuOpen && (
+                    <>
+                        <div className="fixed inset-0 z-30" onClick={() => setIsSortMenuOpen(false)} />
+                        <div className="absolute right-0 mt-2 w-48 bg-white rounded-xl shadow-xl border border-gray-100 z-40 overflow-hidden animate-in fade-in slide-in-from-top-2">
+                            <div className="p-1">
+                                <button onClick={() => { setSortBy('default'); setIsSortMenuOpen(false) }} className={cn("w-full text-left px-3 py-2 text-sm rounded-lg font-medium", sortBy === 'default' ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50")}>Standard (Manuale)</button>
+                                <button onClick={() => { setSortBy('name'); setIsSortMenuOpen(false) }} className={cn("w-full text-left px-3 py-2 text-sm rounded-lg font-medium", sortBy === 'name' ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50")}>Alfabetico (A-Z)</button>
+                                <button onClick={() => { setSortBy('progress-desc'); setIsSortMenuOpen(false) }} className={cn("w-full text-left px-3 py-2 text-sm rounded-lg font-medium", sortBy === 'progress-desc' ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50")}>Più vicini all'obiettivo</button>
+                                <button onClick={() => { setSortBy('progress-asc'); setIsSortMenuOpen(false) }} className={cn("w-full text-left px-3 py-2 text-sm rounded-lg font-medium", sortBy === 'progress-asc' ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50")}>Più lontani dall'obiettivo</button>
+                            </div>
+                        </div>
+                    </>
+                )}
+            </div>
+
+            <button onClick={onOpenSettings} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full transition-colors text-gray-600 border border-gray-100 active:scale-95">
+                <Settings className="w-5 h-5" strokeWidth={2} />
+            </button>
+        </div>
       </div>
 
       <div className="px-4 py-6 max-w-lg mx-auto space-y-6">
@@ -234,96 +347,52 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
         </div>
 
         {/* LISTA BUCKETS */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between px-1">
-            <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wider">Salvadanai Attivi</h2>
-            <span className="text-xs text-gray-400 font-medium">{buckets.length} salvadanai</span>
+        <div className="space-y-6">
+          
+          {/* SEZIONE ATTIVI */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between px-1">
+                <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wider">In Corso</h2>
+                <span className="text-xs text-gray-400 font-medium">{activeBuckets.length} salvadanai</span>
+            </div>
+
+            {loading ? (
+                <div className="space-y-3">
+                {[1,2].map(i => <div key={i} className="h-20 bg-gray-200 rounded-xl animate-pulse" />)}
+                </div>
+            ) : activeBuckets.length === 0 && completedBuckets.length === 0 ? (
+                <div className="text-center py-10 bg-white rounded-2xl border border-dashed border-gray-300">
+                <div className="bg-gray-50 w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3">
+                    <PiggyBank className="w-6 h-6 text-gray-400" />
+                </div>
+                <p className="text-gray-500 font-medium">Nessun salvadanaio creato</p>
+                </div>
+            ) : activeBuckets.length === 0 && completedBuckets.length > 0 ? (
+                <div className="text-center py-6 bg-emerald-50 rounded-2xl border border-emerald-100">
+                    <p className="text-emerald-700 font-medium text-sm">Tutti i tuoi obiettivi sono raggiunti! 🚀</p>
+                </div>
+            ) : (
+                <div className="grid gap-3">
+                    {activeBuckets.map((bucket) => <BucketCard key={bucket.id} bucket={bucket} />)}
+                </div>
+            )}
           </div>
 
-          {loading ? (
-            <div className="space-y-3">
-               {[1,2].map(i => <div key={i} className="h-20 bg-gray-200 rounded-xl animate-pulse" />)}
-            </div>
-          ) : buckets.length === 0 ? (
-            <div className="text-center py-10 bg-white rounded-2xl border border-dashed border-gray-300">
-              <div className="bg-gray-50 w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3">
-                <PiggyBank className="w-6 h-6 text-gray-400" />
-              </div>
-              <p className="text-gray-500 font-medium">Nessun salvadanaio creato</p>
-            </div>
-          ) : (
-            <div className="grid gap-3">
-              {buckets.map((bucket) => {
-                const target = bucket.target_amount || 0
-                const progress = target > 0 ? Math.min((bucket.current_balance || 0) / target * 100, 100) : 0
-                const isCompleted = target > 0 && (bucket.current_balance || 0) >= target
-
-                return (
-                  <div key={bucket.id} className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 group active:scale-[0.99] transition-transform">
-                    <div className="flex items-center justify-between mb-3">
-                        <div className="flex-1 min-w-0 pr-4">
-                            <h3 className="font-bold text-gray-900 text-lg leading-tight break-words flex items-center gap-2">
-                                {bucket.name}
-                                {isCompleted && <CheckCircle2 className="w-4 h-4 text-emerald-500 flex-shrink-0" />}
-                            </h3>
-                            <div className="flex items-center gap-2 mt-1.5">
-                                <p className="text-xs text-gray-400 font-medium">Saldo attuale</p>
-                                {bucket.distribution_percentage > 0 && (
-                                    <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[10px] rounded-md font-bold uppercase tracking-wide whitespace-nowrap">
-                                    {bucket.distribution_percentage}%
-                                    </span>
-                                )}
-                            </div>
-                        </div>
-                        <div className="flex items-center gap-3 shrink-0">
-                            <div className="text-right">
-                                <span className="font-bold text-lg text-gray-900 whitespace-nowrap block">
-                                    {formatCurrency(bucket.current_balance || 0)}
-                                </span>
-                                {target > 0 && (
-                                    <span className="text-[10px] text-gray-400 font-medium">
-                                        su {formatCurrency(target)}
-                                    </span>
-                                )}
-                            </div>
-                            <div className="flex gap-1">
-                                <button 
-                                    onClick={() => {
-                                        setEditingBucket(bucket)
-                                        setEditBucketName(bucket.name)
-                                        setEditBucketDistribution((bucket.distribution_percentage || 0).toString())
-                                        setEditBucketBalance((bucket.current_balance || 0).toString())
-                                        setEditBucketTarget((bucket.target_amount || 0).toString())
-                                        setError(null)
-                                    }}
-                                    className="p-2 text-gray-300 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
-                                >
-                                    <PenLine className="w-4 h-4" />
-                                </button>
-                                <button 
-                                    onClick={() => handleDeleteBucket(bucket.id)}
-                                    className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
-                                >
-                                    <Trash2 className="w-4 h-4" />
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    {/* Progress Bar (Solo se c'è un target) */}
-                    {target > 0 && (
-                        <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
-                            <div 
-                                className={cn("h-full rounded-full transition-all duration-500", isCompleted ? "bg-emerald-500" : "bg-blue-600")} 
-                                style={{ width: `${progress}%` }} 
-                            />
-                        </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
+          {/* SEZIONE COMPLETATI (VISIBILE SOLO SE CE NE SONO) */}
+          {completedBuckets.length > 0 && (
+             <div className="space-y-3 pt-4 border-t border-gray-100">
+                <div className="flex items-center justify-between px-1">
+                    <h2 className="text-sm font-bold text-emerald-600 uppercase tracking-wider flex items-center gap-2">
+                        Traguardi Raggiunti <span className="text-lg">🏆</span>
+                    </h2>
+                    <span className="text-xs text-emerald-500 font-medium">{completedBuckets.length} completati</span>
+                </div>
+                <div className="grid gap-3 opacity-90">
+                    {completedBuckets.map((bucket) => <BucketCard key={bucket.id} bucket={bucket} completed={true} />)}
+                </div>
+             </div>
           )}
+
         </div>
 
         {/* BOTTONE AGGIUNGI */}
@@ -340,7 +409,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
         </button>
       </div>
 
-      {/* MODALE AGGIUNTA */}
+      {/* MODALE AGGIUNTA (INVARIATO) */}
       {isAddFormOpen && (
         <div 
             className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in" 
@@ -433,7 +502,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
         </div>
       )}
 
-      {/* MODALE MODIFICA */}
+      {/* MODALE MODIFICA (INVARIATO) */}
       {editingBucket && (
         <div 
             className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in" 

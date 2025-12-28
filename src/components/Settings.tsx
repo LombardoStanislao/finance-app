@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { ArrowLeft, Save, Plus, Edit2, Trash2, X, LogOut, User, Palette, Layers, CheckCircle2 } from 'lucide-react'
+import { useState, useEffect, useMemo } from 'react'
+import { ArrowLeft, Save, Plus, Edit2, Trash2, X, LogOut, User, Palette, Layers, CheckCircle2, ArrowUpDown, AlertTriangle } from 'lucide-react'
 import { supabase, type Category } from '../lib/supabase'
 import { cn } from '../lib/utils'
 
@@ -14,6 +14,8 @@ interface CategoryWithChildren extends Category {
   children?: CategoryWithChildren[]
 }
 
+type SortOption = 'name' | 'date'
+
 export default function Settings({ onBack, onProfileUpdate, primaryColor, onColorChange }: SettingsProps) {
   // --- STATE: Profilo ---
   const [displayName, setDisplayName] = useState('')
@@ -24,10 +26,8 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
   const [profileSuccess, setProfileSuccess] = useState(false)
 
   // --- STATE: Categorie ---
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [categories, setCategories] = useState<Category[]>([])
-  const [incomeTree, setIncomeTree] = useState<CategoryWithChildren[]>([])
-  const [expenseTree, setExpenseTree] = useState<CategoryWithChildren[]>([])
+  const [sortCategoriesBy, setSortCategoriesBy] = useState<SortOption>('date')
   
   // Form Aggiunta Categoria
   const [newCategoryName, setNewCategoryName] = useState('')
@@ -98,14 +98,12 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
       if (userError) throw userError
       if (!user) throw new Error('Utente non autenticato')
 
-      // Update display name
       const { error } = await supabase.auth.updateUser({
         data: { display_name: displayName }
       })
 
       if (error) throw error
 
-      // Handle initial liquidity
       const liquidityAmount = parseFloat(initialLiquidity) || 0
       
       const { data: existingInitial } = await supabase
@@ -150,7 +148,6 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     }
   }
 
-  // --- LOGICA COLORE ---
   function handleColorChange(e: React.ChangeEvent<HTMLInputElement>) {
     const newColor = e.target.value
     setColorHex(newColor)
@@ -159,40 +156,6 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
   }
 
   // --- LOGICA CATEGORIE ---
-  function buildCategoryTree(categories: Category[]): CategoryWithChildren[] {
-    const categoryMap = new Map<string, CategoryWithChildren>()
-    const rootCategories: CategoryWithChildren[] = []
-
-    categories.forEach(cat => {
-      categoryMap.set(cat.id, { ...cat, children: [] })
-    })
-
-    categories.forEach(cat => {
-      const categoryWithChildren = categoryMap.get(cat.id)!
-      if (cat.parent_id) {
-        const parent = categoryMap.get(cat.parent_id)
-        if (parent) {
-          if (!parent.children) parent.children = []
-          parent.children.push(categoryWithChildren)
-        }
-      } else {
-        rootCategories.push(categoryWithChildren)
-      }
-    })
-
-    const sortCategories = (cats: CategoryWithChildren[]) => {
-      cats.sort((a, b) => a.name.localeCompare(b.name))
-      cats.forEach(cat => {
-        if (cat.children) {
-          sortCategories(cat.children)
-        }
-      })
-    }
-    sortCategories(rootCategories)
-
-    return rootCategories
-  }
-
   async function loadCategories() {
     try {
       const { data: { user } } = await supabase.auth.getUser()
@@ -202,22 +165,56 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
         .from('categories')
         .select('*') 
         .eq('user_id', user.id)
-        .order('name')
+        .order('created_at', { ascending: true }) 
 
       if (error) throw error
-      
-      const categoriesData = data || []
-      setCategories(categoriesData)
-      
-      const incomeCategories = categoriesData.filter(cat => cat.type === 'income')
-      const expenseCategories = categoriesData.filter(cat => cat.type === 'expense')
-      
-      setIncomeTree(buildCategoryTree(incomeCategories))
-      setExpenseTree(buildCategoryTree(expenseCategories))
+      setCategories(data || [])
     } catch (error) {
       console.error('Error loading categories:', error)
     }
   }
+
+  // Costruzione Albero con Ordinamento Dinamico
+  const { incomeTree, expenseTree } = useMemo(() => {
+    const buildTree = (cats: Category[]) => {
+      const categoryMap = new Map<string, CategoryWithChildren>()
+      const rootCategories: CategoryWithChildren[] = []
+
+      cats.forEach(cat => categoryMap.set(cat.id, { ...cat, children: [] }))
+
+      cats.forEach(cat => {
+        const categoryWithChildren = categoryMap.get(cat.id)!
+        if (cat.parent_id) {
+          const parent = categoryMap.get(cat.parent_id)
+          if (parent) {
+            if (!parent.children) parent.children = []
+            parent.children.push(categoryWithChildren)
+          }
+        } else {
+          rootCategories.push(categoryWithChildren)
+        }
+      })
+
+      const sortRecursive = (nodes: CategoryWithChildren[]) => {
+        if (sortCategoriesBy === 'name') {
+            nodes.sort((a, b) => a.name.localeCompare(b.name))
+        }
+        nodes.forEach(node => {
+            if (node.children && node.children.length > 0) {
+                sortRecursive(node.children)
+            }
+        })
+      }
+
+      sortRecursive(rootCategories)
+      return rootCategories
+    }
+
+    return {
+        incomeTree: buildTree(categories.filter(c => c.type === 'income')),
+        expenseTree: buildTree(categories.filter(c => c.type === 'expense'))
+    }
+  }, [categories, sortCategoriesBy])
 
   function flattenCategories(
     categories: CategoryWithChildren[], 
@@ -234,11 +231,7 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
       const indent = '-'.repeat(level)
       const displayName = level > 0 ? `${indent} ${category.name}` : category.name
       
-      result.push({
-        id: category.id,
-        name: displayName,
-        level: level
-      })
+      result.push({ id: category.id, name: displayName, level: level })
       
       if (category.children && category.children.length > 0) {
         result.push(...flattenCategories(category.children, level + 1, excludeId, filterType))
@@ -248,10 +241,65 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     return result
   }
 
+  // --- VALIDAZIONE BUDGET RIGOROSA ---
+  function validateBudgetLogic(
+    amount: number, 
+    parentId: string | null, 
+    currentCategoryId: string | null
+  ): string | null {
+    if (amount <= 0) return null
+
+    // 1. VALIDAZIONE VERSO L'ALTO (Rispetto al Genitore)
+    if (parentId) {
+        const parent = categories.find(c => c.id === parentId)
+        // Se il genitore ha un budget, dobbiamo rispettarlo
+        if (parent && parent.budget_limit && parent.budget_limit > 0) {
+            
+            // A. Il mio budget non può essere maggiore del budget del genitore
+            if (amount > parent.budget_limit) {
+                return `Il budget supera quello del genitore "${parent.name}" (€${parent.budget_limit})`
+            }
+
+            // B. Il mio budget + somma budget fratelli non può superare budget genitore
+            const siblings = categories.filter(c => c.parent_id === parentId && c.id !== currentCategoryId)
+            const siblingsTotal = siblings.reduce((sum, s) => sum + (s.budget_limit || 0), 0)
+            
+            const remaining = parent.budget_limit - siblingsTotal
+            if (amount > remaining) {
+                return `Budget eccessivo. Disponibile nel genitore "${parent.name}": €${remaining} (su €${parent.budget_limit})`
+            }
+        }
+    }
+
+    // 2. VALIDAZIONE VERSO IL BASSO (Rispetto ai Figli - Solo in Modifica)
+    if (currentCategoryId) {
+        const children = categories.filter(c => c.parent_id === currentCategoryId)
+        const childrenTotal = children.reduce((sum, c) => sum + (c.budget_limit || 0), 0)
+        
+        if (childrenTotal > 0 && amount < childrenTotal) {
+            return `Il budget è troppo basso. Le sottocategorie richiedono almeno €${childrenTotal}`
+        }
+    }
+
+    return null
+  }
+
   async function handleAddCategory(e: React.FormEvent) {
     e.preventDefault()
     setCategoryLoading(true)
     setCategoryError(null)
+
+    const budgetVal = newCategoryBudget ? parseFloat(newCategoryBudget) : 0
+    
+    // Esegui Validazione
+    if (newCategoryType === 'expense' && budgetVal > 0) {
+        const errorMsg = validateBudgetLogic(budgetVal, newCategoryParent || null, null)
+        if (errorMsg) {
+            setCategoryError(errorMsg)
+            setCategoryLoading(false)
+            return
+        }
+    }
 
     try {
       const { data: { user }, error: userError } = await supabase.auth.getUser()
@@ -262,8 +310,7 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
         .from('categories')
         .insert({
           name: newCategoryName,
-          // Se è income, non salviamo il budget (o lo mettiamo a null)
-          budget_limit: newCategoryType === 'expense' && newCategoryBudget ? parseFloat(newCategoryBudget) : null,
+          budget_limit: newCategoryType === 'expense' && newCategoryBudget ? budgetVal : null,
           user_id: user.id,
           parent_id: newCategoryParent || null,
           type: newCategoryType,
@@ -282,24 +329,6 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     }
   }
 
-  function openEditModal(category: CategoryWithChildren) {
-    setEditingCategory(category)
-    setEditCategoryName(category.name)
-    setEditCategoryBudget(category.budget_limit ? category.budget_limit.toString() : '')
-    setEditCategoryParent(category.parent_id || '')
-    setEditCategoryType(category.type || 'expense')
-    setCategoryError(null)
-  }
-
-  function closeEditModal() {
-    setEditingCategory(null)
-    setEditCategoryName('')
-    setEditCategoryBudget('')
-    setEditCategoryParent('')
-    setEditCategoryType('expense')
-    setCategoryError(null)
-  }
-
   async function handleEditCategory(e: React.FormEvent) {
     e.preventDefault()
     if (!editingCategory) return
@@ -307,11 +336,22 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     setEditCategoryLoading(true)
     setCategoryError(null)
 
+    const budgetVal = editCategoryBudget ? parseFloat(editCategoryBudget) : 0
+
+    // Esegui Validazione
+    if (editCategoryType === 'expense' && budgetVal > 0) {
+        const errorMsg = validateBudgetLogic(budgetVal, editCategoryParent || null, editingCategory.id)
+        if (errorMsg) {
+            setCategoryError(errorMsg)
+            setEditCategoryLoading(false)
+            return
+        }
+    }
+
     try {
       const updateData = {
         name: editCategoryName.trim(),
-        // Se è income, budget a null
-        budget_limit: editCategoryType === 'expense' && editCategoryBudget ? parseFloat(editCategoryBudget) : null,
+        budget_limit: editCategoryType === 'expense' && editCategoryBudget ? budgetVal : null,
         parent_id: editCategoryParent || null,
         type: editCategoryType,
       }
@@ -333,19 +373,32 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     }
   }
 
+  // Helpers UI
+  function openEditModal(category: CategoryWithChildren) {
+    setEditingCategory(category)
+    setEditCategoryName(category.name)
+    setEditCategoryBudget(category.budget_limit ? category.budget_limit.toString() : '')
+    setEditCategoryParent(category.parent_id || '')
+    setEditCategoryType(category.type || 'expense')
+    setCategoryError(null)
+  }
+
+  function closeEditModal() {
+    setEditingCategory(null)
+    setEditCategoryName('')
+    setEditCategoryBudget('')
+    setEditCategoryParent('')
+    setEditCategoryType('expense')
+    setCategoryError(null)
+  }
+
   async function handleDeleteCategory(categoryId: string) {
     if (!confirm('Sei sicuro di voler eliminare questa categoria?')) {
       return
     }
-
     try {
-      const { error } = await supabase
-        .from('categories')
-        .delete()
-        .eq('id', categoryId)
-
+      const { error } = await supabase.from('categories').delete().eq('id', categoryId)
       if (error) throw error
-
       loadCategories()
     } catch (error: any) {
       console.error('Error deleting category:', error)
@@ -355,7 +408,6 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
 
   function renderCategory(category: CategoryWithChildren, level: number = 0) {
     const indentPx = level * 16
-
     return (
       <div key={category.id} className="group">
         <div
@@ -371,40 +423,27 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
             )}
           </div>
           <div className="flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
-            <button
-              onClick={() => openEditModal(category)}
-              className="p-1.5 hover:bg-gray-200 rounded transition-colors"
-            >
+            <button onClick={() => openEditModal(category)} className="p-1.5 hover:bg-gray-200 rounded transition-colors">
               <Edit2 className="w-3.5 h-3.5 text-gray-500" />
             </button>
-            <button
-              onClick={() => handleDeleteCategory(category.id)}
-              className="p-1.5 hover:bg-red-50 rounded transition-colors"
-            >
+            <button onClick={() => handleDeleteCategory(category.id)} className="p-1.5 hover:bg-red-50 rounded transition-colors">
               <Trash2 className="w-3.5 h-3.5 text-red-500" />
             </button>
           </div>
         </div>
         {category.children && category.children.length > 0 && (
-          <div>
-            {category.children.map(child => renderCategory(child, level + 1))}
-          </div>
+          <div>{category.children.map(child => renderCategory(child, level + 1))}</div>
         )}
       </div>
     )
   }
 
-  // --- RENDER ---
   return (
     <div className="min-h-screen bg-gray-50 pb-24">
       {/* HEADER STICKY */}
       <div className="bg-white sticky top-0 z-20 border-b border-gray-100 shadow-sm">
         <div className="max-w-md mx-auto px-4 py-4 flex items-center gap-3">
-          <button
-            onClick={onBack}
-            className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors"
-            aria-label="Indietro"
-          >
+          <button onClick={onBack} className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors">
             <ArrowLeft className="w-6 h-6 text-gray-700" />
           </button>
           <h1 className="text-xl font-bold text-gray-900">Impostazioni</h1>
@@ -421,11 +460,8 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
           </div>
           <div className="p-5 space-y-4">
             <div>
-              <label htmlFor="displayName" className="text-xs font-bold text-gray-500 uppercase ml-1">
-                Nome
-              </label>
+              <label className="text-xs font-bold text-gray-500 uppercase ml-1">Nome</label>
               <input
-                id="displayName"
                 type="text"
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
@@ -433,13 +469,9 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
                 placeholder="Il tuo nome"
               />
             </div>
-
             <div>
-              <label htmlFor="initialLiquidity" className="text-xs font-bold text-gray-500 uppercase ml-1">
-                Liquidità Iniziale
-              </label>
+              <label className="text-xs font-bold text-gray-500 uppercase ml-1">Liquidità Iniziale</label>
               <input
-                id="initialLiquidity"
                 type="number"
                 step="0.01"
                 value={initialLiquidity}
@@ -448,7 +480,6 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
                 placeholder="0.00"
               />
             </div>
-
             {profileSuccess && (
               <div className="flex items-center gap-2 text-emerald-600 bg-emerald-50 p-3 rounded-lg text-sm font-medium">
                 <CheckCircle2 className="w-4 h-4" /> Salvato con successo!
@@ -479,9 +510,19 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
 
         {/* CATEGORIE */}
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-          <div className="px-5 py-4 border-b border-gray-100 bg-gray-50/50 flex items-center gap-2">
-            <Layers className="w-4 h-4 text-orange-600" />
-            <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Categorie</h2>
+          <div className="px-5 py-4 border-b border-gray-100 bg-gray-50/50 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+                <Layers className="w-4 h-4 text-orange-600" />
+                <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Categorie</h2>
+            </div>
+            {/* Sort Toggle */}
+            <button 
+                onClick={() => setSortCategoriesBy(prev => prev === 'date' ? 'name' : 'date')}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-bold text-gray-600 hover:bg-gray-50 transition-colors"
+            >
+                <ArrowUpDown className="w-3.5 h-3.5" />
+                {sortCategoriesBy === 'name' ? 'A-Z' : 'Standard'}
+            </button>
           </div>
           <div className="p-5 space-y-6">
             
@@ -544,19 +585,26 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
                             ))}
                          </select>
                          
-                         {/* Campo Budget VISIBILE SOLO SE è Expense */}
+                         {/* Campo Budget */}
                          {newCategoryType === 'expense' && (
-                             <input
-                                type="number"
-                                value={newCategoryBudget}
-                                onChange={(e) => setNewCategoryBudget(e.target.value)}
-                                className="w-24 p-3 bg-gray-50 rounded-xl text-sm font-medium outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all"
-                                placeholder="Budget"
-                            />
+                             <div className="w-24 relative">
+                                <input
+                                    type="number"
+                                    value={newCategoryBudget}
+                                    onChange={(e) => setNewCategoryBudget(e.target.value)}
+                                    className="w-full p-3 bg-gray-50 rounded-xl text-sm font-medium outline-none focus:bg-white focus:ring-2 transition-all"
+                                    placeholder="Budget"
+                                />
+                             </div>
                          )}
                     </div>
 
-                    {categoryError && <p className="text-xs text-red-500 ml-1">{categoryError}</p>}
+                    {categoryError && (
+                        <div className="p-3 bg-red-50 border border-red-100 rounded-xl flex items-start gap-2 text-red-600 text-xs font-medium animate-in fade-in slide-in-from-top-1">
+                            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                            <span>{categoryError}</span>
+                        </div>
+                    )}
 
                     <button
                       type="submit"
@@ -572,7 +620,6 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
         
         {/* ACTION BUTTONS BOTTOM */}
         <div className="space-y-3">
-            {/* BOTTONE SALVA PROFILO */}
             <button
               onClick={handleSaveProfile}
               disabled={loading}
@@ -583,7 +630,6 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
               {loading ? 'Salvataggio...' : 'Salva Profilo'}
             </button>
 
-            {/* LOGOUT */}
             <button
               onClick={async () => { if (window.confirm('Uscire?')) await supabase.auth.signOut() }}
               className="w-full py-4 text-red-500 font-bold text-sm bg-white rounded-2xl border border-gray-100 hover:bg-red-50 transition-colors flex items-center justify-center gap-2"
@@ -629,17 +675,26 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
                     ))}
                  </select>
                  
-                 {/* Campo Budget VISIBILE SOLO SE è Expense */}
+                 {/* Campo Budget */}
                  {editCategoryType === 'expense' && (
-                     <input
-                        type="number"
-                        value={editCategoryBudget}
-                        onChange={e => setEditCategoryBudget(e.target.value)}
-                        className="w-24 p-3 bg-gray-50 rounded-xl font-medium outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all"
-                        placeholder="Budget"
-                     />
+                     <div className="w-24 relative">
+                        <input
+                            type="number"
+                            value={editCategoryBudget}
+                            onChange={e => setEditCategoryBudget(e.target.value)}
+                            className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none border-2 border-transparent focus:bg-white transition-all"
+                            placeholder="Budget"
+                        />
+                     </div>
                  )}
                </div>
+
+               {categoryError && (
+                    <div className="p-3 bg-red-50 border border-red-100 rounded-xl flex items-start gap-2 text-red-600 text-xs font-medium animate-in fade-in slide-in-from-top-1">
+                        <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                        <span>{categoryError}</span>
+                    </div>
+                )}
 
                <button
                   type="submit"

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
-import { X, TrendingUp, TrendingDown, ArrowRightLeft, Calendar, AlignLeft, Wallet, PieChart, Repeat } from 'lucide-react'
-import { supabase, type Category, type Bucket, type Investment } from '../lib/supabase'
-import { cn } from '../lib/utils'
+import { X, TrendingUp, TrendingDown, ArrowRightLeft, Calendar, AlignLeft, Wallet, PieChart, Repeat, PiggyBank } from 'lucide-react'
+import { supabase, type Category, type Bucket, type Investment, type Transaction } from '../lib/supabase'
+import { cn, formatCurrency } from '../lib/utils'
 
 interface TransactionFormProps {
   isOpen: boolean
@@ -40,6 +40,9 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Nuovo stato per le distribuzioni collegate
+  const [relatedDistributions, setRelatedDistributions] = useState<Transaction[]>([])
+
   useEffect(() => {
     if (isOpen) {
       loadCategories()
@@ -72,11 +75,40 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
           setTransferDestinationType('investment')
           setTransferDestination('')
         }
+
+        // Se è un'entrata, cerca distribuzioni collegate usando il TIMESTAMP preciso
+        if (editingTransaction.type === 'income') {
+            loadRelatedDistributions(editingTransaction)
+        } else {
+            setRelatedDistributions([])
+        }
+
       } else {
         resetForm()
       }
     }
   }, [isOpen, editingTransaction])
+
+  async function loadRelatedDistributions(sourceTx: any) {
+    if (!sourceTx?.created_at) return
+
+    const sourceTime = new Date(sourceTx.created_at).getTime()
+    const timeStart = new Date(sourceTime - 100).toISOString()
+    const timeEnd = new Date(sourceTime + 5000).toISOString()
+
+    const { data } = await supabase
+        .from('transactions')
+        .select('*')
+        .eq('user_id', (await supabase.auth.getUser()).data.user?.id)
+        .eq('type', 'transfer')
+        .gte('created_at', timeStart)
+        .lte('created_at', timeEnd)
+        .ilike('description', 'Distribuzione automatica%')
+
+    if (data) {
+        setRelatedDistributions(data)
+    }
+  }
 
   function resetForm() {
     setEditingId(null)
@@ -90,28 +122,21 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
     setTransferSource('')
     setTransferDestinationType('investment')
     setTransferDestination('')
+    setRelatedDistributions([])
   }
 
-  // Effect per filtrare le categorie e gestire il default (solo se necessario)
   useEffect(() => {
     if (categoryTree.length === 0) return
-    
     const filtered = categoryTree.filter(cat => cat.type === type)
     setFilteredCategoryTree(filtered)
     
-    // Controlla se la categoria attuale è valida per il tipo corrente
-    // Se stiamo modificando, categoryId è già settato correttamente dall'altro useEffect
     const currentCategory = categories.find(c => c.id === categoryId)
-    
-    // Resetta a default SOLO se:
-    // 1. Non c'è una categoria selezionata
-    // 2. OPPURE la categoria selezionata non appartiene al tipo corrente (es. passo da Entrata a Uscita)
     if (!currentCategory || currentCategory.type !== type) {
       const firstMatch = categories.find(c => c.type === type)
       if (firstMatch) setCategoryId(firstMatch.id)
       else setCategoryId('')
     }
-  }, [type, categoryTree, categories]) // Aggiunto categories alle dipendenze per sicurezza
+  }, [type, categoryTree, categories])
 
   function buildCategoryTree(categories: Category[]): CategoryWithChildren[] {
     const categoryMap = new Map<string, CategoryWithChildren>()
@@ -160,8 +185,6 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
       setCategories(categoriesData)
       const tree = buildCategoryTree(categoriesData)
       setCategoryTree(tree)
-      // FIX: Rimosso blocco che resettava categoryId qui.
-      // La gestione del default è delegata interamente all'useEffect [type, categoryTree]
     } catch (error) { console.error(error) }
   }
 
@@ -390,6 +413,7 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
   }
 
   return (
+    // FIX: z-index aumentato a z-[100] per coprire la BottomBar
     <div 
         className="fixed inset-0 bg-black/60 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 backdrop-blur-sm animate-in fade-in"
         onClick={onClose}
@@ -562,20 +586,54 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                 </div>
                 )}
 
-                {/* Auto Split Switch */}
-                {type === 'income' && buckets.some(b => (b.distribution_percentage || 0) > 0) && (
-                    <label className="flex items-center justify-between p-4 bg-gray-50 rounded-2xl cursor-pointer border border-transparent hover:border-gray-200 transition-all">
-                        <div className="flex items-center gap-3">
-                            <div className="p-2 bg-indigo-100 text-indigo-600 rounded-lg">
-                                <Repeat className="w-5 h-5" />
+                {/* Auto Split Switch & Related Distributions */}
+                {type === 'income' && (
+                    <>
+                        {/* Selettore Auto Distribuzione (solo se nuova o non ci sono distribuzioni già fatte) */}
+                        {buckets.some(b => (b.distribution_percentage || 0) > 0) && relatedDistributions.length === 0 && (
+                            <label className="flex items-center justify-between p-4 bg-gray-50 rounded-2xl cursor-pointer border border-transparent hover:border-gray-200 transition-all">
+                                <div className="flex items-center gap-3">
+                                    <div className="p-2 bg-indigo-100 text-indigo-600 rounded-lg">
+                                        <Repeat className="w-5 h-5" />
+                                    </div>
+                                    <div>
+                                        <span className="font-bold text-gray-700 text-sm block">Divisione Automatica Salvadanai</span>
+                                        <span className="text-xs text-gray-400">Distribuisce in base alle % impostate</span>
+                                    </div>
+                                </div>
+                                <input type="checkbox" checked={applyAutoSplit} onChange={(e) => setApplyAutoSplit(e.target.checked)} className="w-6 h-6 rounded-md text-blue-600 focus:ring-blue-500 border-gray-300" />
+                            </label>
+                        )}
+
+                        {/* Lista Distribuzioni Correlate (VISIBILE SOLO SE ESISTONO) */}
+                        {relatedDistributions.length > 0 && (
+                            <div className="mt-4 p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                                <h4 className="text-xs font-bold text-gray-500 uppercase mb-3 flex items-center gap-1">
+                                    <ArrowRightLeft className="w-3 h-3" /> Distribuzioni Collegate
+                                </h4>
+                                <div className="space-y-2">
+                                    {relatedDistributions.map(dist => (
+                                        <div key={dist.id} className="flex justify-between items-center p-3 bg-white rounded-xl border border-gray-100 shadow-sm">
+                                            <div className="flex items-center gap-3 min-w-0 flex-1">
+                                                <div className="p-2 bg-blue-50 text-blue-600 rounded-lg shrink-0">
+                                                    <PiggyBank className="w-4 h-4" />
+                                                </div>
+                                                <div className="flex flex-col">
+                                                    <span className="text-[10px] text-gray-400 font-bold uppercase leading-none mb-0.5">Verso</span>
+                                                    <span className="text-sm font-bold text-gray-900 leading-snug">
+                                                        {dist.description?.replace('Distribuzione automatica a ', '')}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                            <span className="font-bold text-gray-900 ml-3 whitespace-nowrap">
+                                                {formatCurrency(Math.abs(dist.amount))}
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
                             </div>
-                            <div>
-                                <span className="font-bold text-gray-700 text-sm block">Divisione Automatica Salvadanai</span>
-                                <span className="text-xs text-gray-400">Distribuisce in base alle % impostate</span>
-                            </div>
-                        </div>
-                        <input type="checkbox" checked={applyAutoSplit} onChange={(e) => setApplyAutoSplit(e.target.checked)} className="w-6 h-6 rounded-md text-blue-600 focus:ring-blue-500 border-gray-300" />
-                    </label>
+                        )}
+                    </>
                 )}
             </div>
             </form>

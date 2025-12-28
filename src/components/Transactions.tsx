@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { ArrowLeft, ArrowRightLeft, Calendar, Search, Trash2, TrendingDown, TrendingUp, X } from 'lucide-react'
+import { ArrowLeft, ArrowRightLeft, Calendar, Search, Trash2, TrendingDown, TrendingUp, X, Settings } from 'lucide-react'
 import { supabase, type Transaction, type Category } from '../lib/supabase'
 import { formatCurrency, formatDate, cn } from '../lib/utils'
 import TransactionForm from './TransactionForm'
@@ -10,7 +10,7 @@ interface TransactionsProps {
   primaryColor: string
 }
 
-export default function Transactions({ onBack, primaryColor }: TransactionsProps) {
+export default function Transactions({ onBack, onOpenSettings, primaryColor }: TransactionsProps) {
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [loading, setLoading] = useState(true)
@@ -192,14 +192,22 @@ export default function Transactions({ onBack, primaryColor }: TransactionsProps
     <div className="min-h-screen bg-gray-50 pb-24">
       {/* HEADER STICKY */}
       <div className="bg-white sticky top-0 z-20 border-b border-gray-100 shadow-sm">
-        <div className="max-w-md mx-auto px-4 py-4 flex items-center gap-3">
+        <div className="max-w-md mx-auto px-4 py-4 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+                <button 
+                onClick={onBack}
+                className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors"
+                >
+                <ArrowLeft className="w-6 h-6 text-gray-700" />
+                </button>
+                <h1 className="text-xl font-bold text-gray-900">Storico</h1>
+            </div>
             <button 
-            onClick={onBack}
-            className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors"
+                onClick={onOpenSettings}
+                className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full transition-colors text-gray-600 border border-gray-100 active:scale-95"
             >
-            <ArrowLeft className="w-6 h-6 text-gray-700" />
+                <Settings className="w-5 h-5" strokeWidth={2} />
             </button>
-            <h1 className="text-xl font-bold text-gray-900">Storico</h1>
         </div>
       </div>
 

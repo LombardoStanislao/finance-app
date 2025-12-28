@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { ArrowLeft, TrendingUp, Calendar, BarChart3, Wallet, TrendingDown } from 'lucide-react'
+import { ArrowLeft, TrendingUp, Calendar, BarChart3, Wallet, TrendingDown, Settings } from 'lucide-react'
 import { PieChart, Pie, Cell, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts'
 import { supabase, type Category } from '../lib/supabase'
 import { formatCurrency, cn } from '../lib/utils'
@@ -69,7 +69,7 @@ const renderCustomizedLabel = (props: any) => {
   )
 }
 
-export default function Statistics({ onBack, primaryColor }: StatisticsProps) {
+export default function Statistics({ onBack, onOpenSettings, primaryColor }: StatisticsProps) {
   const [loading, setLoading] = useState(true)
   
   // Dati Grafici
@@ -303,11 +303,20 @@ export default function Statistics({ onBack, primaryColor }: StatisticsProps) {
     <div className="min-h-screen bg-gray-50 pb-24">
       {/* HEADER STICKY */}
       <div className="bg-white sticky top-0 z-10 border-b border-gray-100 px-4 py-4 flex flex-col gap-4 shadow-sm">
-        <div className="flex items-center gap-3">
-            <button onClick={onBack} className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors">
-            <ArrowLeft className="w-6 h-6 text-gray-700" />
+        <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+                <button onClick={onBack} className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors">
+                    <ArrowLeft className="w-6 h-6 text-gray-700" />
+                </button>
+                <h1 className="text-xl font-bold text-gray-900">Analisi Finanziaria</h1>
+            </div>
+
+             <button 
+                onClick={onOpenSettings}
+                className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full transition-colors text-gray-600 border border-gray-100 active:scale-95"
+            >
+                <Settings className="w-5 h-5" strokeWidth={2} />
             </button>
-            <h1 className="text-xl font-bold text-gray-900">Analisi Finanziaria</h1>
         </div>
         
         {/* CONTROLLI FILTRO TORTE (Month / 6M / Year / Custom) */}

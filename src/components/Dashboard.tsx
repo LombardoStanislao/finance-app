@@ -366,10 +366,20 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                             {t.type === 'income' ? <TrendingUp className="w-5 h-5" /> : t.type === 'transfer' ? <ArrowRightLeft className="w-5 h-5" /> : <TrendingDown className="w-5 h-5" />}
                         </div>
                         <div className="flex-1 min-w-0 pr-2">
-                        <div className="flex flex-wrap items-center gap-2 mb-1">
-                            <h3 className="font-bold text-gray-900 leading-tight break-words">{t.description || (t.type === 'transfer' ? 'Trasferimento' : getCategoryName(t.category_id || ''))}</h3>
-                        </div>
-                        <p className="text-xs text-gray-400">{formatDate(t.date)}</p>
+                          <div className="flex flex-wrap items-center gap-2 mb-1">
+                              <h3 className="font-bold text-gray-900 leading-tight break-words">{t.description || (t.type === 'transfer' ? 'Trasferimento' : getCategoryName(t.category_id || ''))}</h3>
+                          </div>
+                          
+                          {/* Modifica qui: Data e Categoria in riga */}
+                          <div className="flex flex-wrap items-center gap-1.5 text-xs text-gray-400 font-medium">
+                              <span>{formatDate(t.date)}</span>
+                              {t.category_id && t.type !== 'transfer' && (
+                                <>
+                                  <span className="text-gray-300">•</span>
+                                  <span className="truncate max-w-[150px] text-gray-500">{getCategoryName(t.category_id)}</span>
+                                </>
+                              )}
+                          </div>
                         </div>
                     </div>
                     <div className="flex flex-col items-end gap-2 shrink-0 ml-2">

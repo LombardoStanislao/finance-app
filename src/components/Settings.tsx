@@ -1,9 +1,9 @@
 import { useState, useEffect, useMemo } from 'react'
-import { ArrowLeft, Save, Plus, Edit2, Trash2, X, LogOut, User, Palette, Layers, CheckCircle2, ArrowUpDown, AlertTriangle, GripVertical } from 'lucide-react'
+import { ArrowLeft, Save, Plus, Edit2, Trash2, X, LogOut, User, Palette, Layers, CheckCircle2, ArrowUpDown, AlertTriangle, GripVertical, AlertOctagon, Wallet, ChevronRight } from 'lucide-react'
 import { supabase, type Category } from '../lib/supabase'
 import { cn } from '../lib/utils'
 
-// DND Kit Imports - CORREZIONE QUI SOTTO
+// DND Kit Imports
 import {
   DndContext,
   closestCenter,
@@ -12,7 +12,7 @@ import {
   TouchSensor,
   useSensor,
   useSensors,
-  type DragEndEvent // <--- Aggiunto 'type' qui per risolvere il crash
+  type DragEndEvent
 } from '@dnd-kit/core';
 import {
   arrayMove,
@@ -125,10 +125,10 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
   const [loading, setLoading] = useState(false)
   const [profileError, setProfileError] = useState<string | null>(null)
   const [profileSuccess, setProfileSuccess] = useState(false)
+  const [resetLoading, setResetLoading] = useState(false)
 
   // --- STATE: Categorie ---
   const [categories, setCategories] = useState<CategoryWithRank[]>([])
-  // 'rank' è il nuovo 'Standard' (Manuale), 'name' è A-Z
   const [sortCategoriesBy, setSortCategoriesBy] = useState<SortOption>('rank')
   
   // Form Aggiunta Categoria
@@ -147,11 +147,8 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
   const [editCategoryType, setEditCategoryType] = useState<'income' | 'expense'>('expense')
   const [editCategoryLoading, setEditCategoryLoading] = useState(false)
 
-  // --- STATE: Colore ---
-  const [colorHex, setColorHex] = useState<string>(() => {
-    const presetMap: Record<string, string> = { 'blue': '#3b82f6', 'emerald': '#10b981', 'violet': '#8b5cf6', 'orange': '#f97316' }
-    return presetMap[primaryColor] || primaryColor || '#3b82f6'
-  })
+  // --- STATE: Colore (Inizializzato con primaryColor) ---
+  const [colorHex, setColorHex] = useState<string>(primaryColor)
 
   // --- DND SENSORS ---
   const sensors = useSensors(
@@ -160,7 +157,6 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
       coordinateGetter: sortableKeyboardCoordinates,
     }),
     useSensor(TouchSensor, {
-        // Importante per mobile: delay o tolleranza per distinguere scroll da drag
         activationConstraint: {
             delay: 250, 
             tolerance: 5,
@@ -174,13 +170,9 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     loadCategories()
   }, [])
 
+  // Sincronizza lo stato se primaryColor cambia dall'esterno (es. caricamento iniziale)
   useEffect(() => {
-    const presetMap: Record<string, string> = { 'blue': '#3b82f6', 'emerald': '#10b981', 'violet': '#8b5cf6', 'orange': '#f97316' }
-    if (presetMap[primaryColor]) {
-      setColorHex(presetMap[primaryColor])
-    } else if (primaryColor.startsWith('#')) {
-      setColorHex(primaryColor)
-    }
+    setColorHex(primaryColor)
   }, [primaryColor])
 
   // --- LOGICA PROFILO ---
@@ -204,6 +196,12 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     }
   }
 
+  // Gestione cambio colore live (Anteprima immediata)
+  function handleLocalColorChange(val: string) {
+      setColorHex(val)
+      onColorChange(val) // Applica subito all'app per feedback visivo
+  }
+
   async function handleSaveProfile(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
@@ -215,12 +213,23 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
       if (userError) throw userError
       if (!user) throw new Error('Utente non autenticato')
 
-      const { error } = await supabase.auth.updateUser({
+      // 1. Aggiorna Nome (Auth Metadata)
+      const { error: authErr } = await supabase.auth.updateUser({
         data: { display_name: displayName }
       })
+      if (authErr) throw authErr
 
-      if (error) throw error
+      // 2. Aggiorna Colore (Database Profiles)
+      const { error: profileErr } = await supabase
+        .from('profiles')
+        .upsert({ 
+            id: user.id, 
+            theme_color: colorHex,
+            updated_at: new Date().toISOString()
+        })
+      if (profileErr) throw profileErr
 
+      // 3. Aggiorna Liquidità Iniziale
       const liquidityAmount = parseFloat(initialLiquidity) || 0
       
       const { data: existingInitial } = await supabase
@@ -265,11 +274,42 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     }
   }
 
-  function handleColorChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const newColor = e.target.value
-    setColorHex(newColor)
-    onColorChange(newColor)
-    localStorage.setItem('primaryColor', newColor)
+  async function handleFactoryReset() {
+      if (!window.confirm('⚠️ ATTENZIONE: Stai per eliminare TUTTI i tuoi dati (Transazioni, Salvadanai, Investimenti, Categorie).\n\nL\'operazione è IRREVERSIBILE. Vuoi procedere?')) {
+          return
+      }
+      if (!window.confirm('Sei ASSOLUTAMENTE sicuro? Tutti i dati andranno persi per sempre e l\'app tornerà come nuova.')) {
+          return
+      }
+
+      setResetLoading(true)
+      try {
+          const { data: { user } } = await supabase.auth.getUser()
+          if (!user) throw new Error('Utente non autenticato')
+
+          const { error: tError } = await supabase.from('transactions').delete().eq('user_id', user.id)
+          if (tError) throw tError
+
+          const { error: iError } = await supabase.from('investments').delete().eq('user_id', user.id)
+          if (iError) throw iError
+
+          const { error: bError } = await supabase.from('buckets').delete().eq('user_id', user.id)
+          if (bError) throw bError
+
+          const { error: cError } = await supabase.from('categories').delete().eq('user_id', user.id)
+          if (cError) throw cError
+
+          setCategories([])
+          setInitialLiquidity('')
+          onProfileUpdate()
+          alert('Reset completato con successo. Benvenuto nel tuo nuovo inizio!')
+          
+      } catch (error: any) {
+          console.error('Factory Reset Error:', error)
+          alert('Si è verificato un errore durante il ripristino: ' + error.message)
+      } finally {
+          setResetLoading(false)
+      }
   }
 
   // --- LOGICA CATEGORIE ---
@@ -278,7 +318,6 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
 
-      // Carichiamo anche il campo 'rank'.
       const { data, error } = await supabase
         .from('categories')
         .select('*') 
@@ -286,7 +325,6 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
         
       if (error) throw error
       
-      // Ordinamento iniziale in base al rank (se esiste) o created_at
       const sortedData = (data || []).sort((a: any, b: any) => {
          if (a.rank !== null && b.rank !== null && a.rank !== undefined && b.rank !== undefined) {
              return a.rank - b.rank;
@@ -300,16 +338,13 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     }
   }
 
-  // Costruzione Albero con Ordinamento Dinamico
   const { incomeTree, expenseTree } = useMemo(() => {
     const buildTree = (cats: CategoryWithRank[]) => {
       const categoryMap = new Map<string, CategoryWithChildren>()
       const rootCategories: CategoryWithChildren[] = []
 
-      // Map initialization
       cats.forEach(cat => categoryMap.set(cat.id, { ...cat, children: [] }))
 
-      // Build hierarchy
       cats.forEach(cat => {
         const categoryWithChildren = categoryMap.get(cat.id)!
         if (cat.parent_id) {
@@ -323,12 +358,10 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
         }
       })
 
-      // Recursive Sort
       const sortRecursive = (nodes: CategoryWithChildren[]) => {
         if (sortCategoriesBy === 'name') {
             nodes.sort((a, b) => a.name.localeCompare(b.name))
         } else {
-            // Rank sorting (Manual)
             nodes.sort((a: any, b: any) => (a.rank ?? 0) - (b.rank ?? 0))
         }
 
@@ -349,22 +382,17 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     }
   }, [categories, sortCategoriesBy])
 
-  // --- DND HANDLER ---
   async function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
 
     if (!over || active.id === over.id) return;
 
-    // Troviamo gli elementi originali
     const activeItem = categories.find(c => c.id === active.id);
     const overItem = categories.find(c => c.id === over.id);
 
     if (!activeItem || !overItem) return;
-
-    // Solo riordino tra fratelli (stesso parent_id)
     if (activeItem.parent_id !== overItem.parent_id) return;
 
-    // Calcoliamo il nuovo ordine
     const siblings = categories
         .filter(c => c.parent_id === activeItem.parent_id && c.type === activeItem.type)
         .sort((a: any, b: any) => (a.rank ?? 0) - (b.rank ?? 0));
@@ -374,7 +402,6 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
 
     const newOrder = arrayMove(siblings, oldIndex, newIndex);
 
-    // Aggiorniamo lo stato locale e i rank
     const updates: { id: string, rank: number }[] = [];
     
     const updatedCategories = categories.map(cat => {
@@ -386,20 +413,18 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
         return cat;
     });
 
-    setCategories(updatedCategories); // Update Optimistic
+    setCategories(updatedCategories);
 
-    // Aggiorniamo Supabase in background
     try {
         for (const update of updates) {
             await supabase.from('categories').update({ rank: update.rank }).eq('id', update.id);
         }
     } catch (err) {
         console.error("Errore salvataggio ordine", err);
-        loadCategories(); // Revert in case of error
+        loadCategories();
     }
   }
 
-  // --- FLATTEN HELPERS ---
   function flattenCategories(
     categories: CategoryWithChildren[], 
     level: number = 0, 
@@ -425,7 +450,6 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     return result
   }
 
-  // --- CRUD ACTIONS ---
   function validateBudgetLogic(amount: number, parentId: string | null, currentCategoryId: string | null): string | null {
     if (amount <= 0) return null
     if (parentId) {
@@ -461,7 +485,6 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) throw new Error('Utente non autenticato')
 
-      // Get Max Rank for new item
       const siblings = categories.filter(c => c.parent_id === (newCategoryParent || null) && c.type === newCategoryType);
       const maxRank = siblings.length > 0 ? Math.max(...siblings.map((s: any) => s.rank || 0)) : 0;
 
@@ -516,6 +539,14 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
   }
 
   async function handleDeleteCategory(categoryId: string) {
+    const cat = categories.find(c => c.id === categoryId)
+    
+    // Protezione per categoria di sistema
+    if (cat?.name === 'Investimenti') {
+        alert('Questa è una categoria di sistema necessaria per il tracciamento degli investimenti. Non può essere eliminata.')
+        return
+    }
+
     if (!confirm('Sei sicuro di voler eliminare questa categoria?')) return
     try {
       const { error } = await supabase.from('categories').delete().eq('id', categoryId)
@@ -541,14 +572,13 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
 
   // --- RENDER HELPERS ---
   const renderSortableList = (list: CategoryWithChildren[], level: number = 0) => {
-    // Solo se stiamo in modalità rank attiviamo il context sortable
     const sortableIds = list.map(c => c.id);
     
     return (
         <SortableContext 
             items={sortableIds} 
             strategy={verticalListSortingStrategy}
-            disabled={sortCategoriesBy === 'name'} // Disabilita DND se in A-Z
+            disabled={sortCategoriesBy === 'name'}
         >
             <div className="space-y-1">
                 {list.map(cat => (
@@ -560,7 +590,6 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
                         onDelete={handleDeleteCategory}
                         disabled={sortCategoriesBy === 'name'}
                         renderChildren={(parent, lvl) => (
-                           // Qui annidiamo un altro SortableContext per i figli
                            renderSortableList(parent.children || [], lvl)
                         )}
                     />
@@ -584,22 +613,95 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
 
       <div className="max-w-md mx-auto px-4 py-6 space-y-6">
         
-        {/* PROFILO */}
+        {/* 1. SITUAZIONE DI PARTENZA */}
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+            <div className="flex items-center gap-3 mb-4">
+                <div className="p-2 bg-blue-50 text-blue-600 rounded-xl">
+                    <Wallet className="w-5 h-5" />
+                </div>
+                <h2 className="font-bold text-gray-900">Situazione di Partenza</h2>
+            </div>
+            
+            <div className="space-y-4">
+                <p className="text-sm text-gray-500">
+                    Imposta qui la liquidità che hai già sui conti correnti al momento dell'installazione dell'app.
+                </p>
+                <div>
+                    <label className="text-xs font-bold text-gray-500 uppercase mb-1 block">Liquidità Iniziale (€)</label>
+                    <div className="flex gap-2">
+                        <input
+                            type="number"
+                            value={initialLiquidity}
+                            onChange={(e) => setInitialLiquidity(e.target.value)}
+                            className="flex-1 p-3 bg-gray-50 rounded-xl border-2 border-transparent focus:border-blue-500 outline-none font-bold text-gray-900"
+                            placeholder="0.00"
+                        />
+                    </div>
+                </div>
+                
+                <div className="p-3 bg-gray-50 rounded-xl border border-gray-100 mt-2">
+                    <p className="text-xs text-gray-600 font-medium mb-2">
+                        Hai già degli investimenti?
+                    </p>
+                    <button 
+                        onClick={onBack} 
+                        className="w-full text-left text-xs text-blue-600 font-bold flex items-center justify-between group"
+                    >
+                        Vai alla sezione Investimenti
+                        <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                    </button>
+                    <p className="text-[10px] text-gray-400 mt-1">
+                        Aggiungili lì selezionando "Già in portafoglio" per non scalare la liquidità.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        {/* 2. PROFILO & ASPETTO */}
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
           <div className="px-5 py-4 border-b border-gray-100 bg-gray-50/50 flex items-center gap-2">
             <User className="w-4 h-4 text-blue-600" />
-            <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Profilo</h2>
+            <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Profilo & Aspetto</h2>
           </div>
-          <div className="p-5 space-y-4">
+          <div className="p-5 space-y-6">
             <div>
-              <label className="text-xs font-bold text-gray-500 uppercase ml-1">Nome</label>
-              <input type="text" value={displayName} onChange={(e) => setDisplayName(e.target.value)} className="w-full mt-1 p-3 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-sm" placeholder="Il tuo nome" />
+              <label className="text-xs font-bold text-gray-500 uppercase ml-1">Nome Visualizzato</label>
+              <input
+                type="text"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                className="w-full mt-1 p-3 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-sm"
+                placeholder="Il tuo nome"
+              />
             </div>
+            
+            {/* COLOR PICKER AGGIORNATO (NATIVO + HEX) */}
             <div>
-              <label className="text-xs font-bold text-gray-500 uppercase ml-1">Liquidità Iniziale</label>
-              <input type="number" step="0.01" value={initialLiquidity} onChange={(e) => setInitialLiquidity(e.target.value)} className="w-full mt-1 p-3 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-sm" placeholder="0.00" />
+                <label className="text-xs font-bold text-gray-500 uppercase mb-2 block">Colore Tema Principale</label>
+                <div className="flex gap-3 items-center">
+                    <div className="relative w-14 h-14 rounded-2xl overflow-hidden shadow-sm border border-gray-200">
+                        <input 
+                            type="color" 
+                            value={colorHex} 
+                            onChange={(e) => handleLocalColorChange(e.target.value)}
+                            className="absolute inset-0 w-[150%] h-[150%] -top-1/4 -left-1/4 cursor-pointer" 
+                        />
+                    </div>
+                    <div className="flex-1">
+                        <input 
+                            type="text" 
+                            value={colorHex} 
+                            onChange={(e) => handleLocalColorChange(e.target.value)}
+                            className="w-full p-3 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 font-mono text-sm uppercase"
+                            placeholder="#000000"
+                        />
+                    </div>
+                </div>
+                <p className="text-[10px] text-gray-400 mt-2">
+                    Scegli un colore dallo spettro o inserisci il codice HEX. Verrà salvato nel tuo profilo.
+                </p>
             </div>
-            {/* Visualizzazione Errore Profilo */}
+
             {profileError && (
                 <div className="p-3 bg-red-50 text-red-600 text-sm rounded-lg flex items-center gap-2 animate-in fade-in">
                     <AlertTriangle className="w-4 h-4 shrink-0" />
@@ -607,18 +709,6 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
                 </div>
             )}
             {profileSuccess && <div className="flex items-center gap-2 text-emerald-600 bg-emerald-50 p-3 rounded-lg text-sm font-medium"><CheckCircle2 className="w-4 h-4" /> Salvato con successo!</div>}
-          </div>
-        </div>
-
-        {/* ASPETTO */}
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-          <div className="px-5 py-4 border-b border-gray-100 bg-gray-50/50 flex items-center gap-2">
-            <Palette className="w-4 h-4 text-purple-600" />
-            <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Aspetto</h2>
-          </div>
-          <div className="p-5 flex items-center gap-4">
-              <input type="color" value={colorHex} onChange={handleColorChange} className="w-14 h-14 rounded-xl border-4 border-white shadow-md cursor-pointer" />
-              <div><p className="text-sm font-medium text-gray-900">Colore Tema</p><p className="text-xs text-gray-500 font-mono">{colorHex.toUpperCase()}</p></div>
           </div>
         </div>
 
@@ -691,11 +781,24 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
         </DndContext>
         
         {/* ACTION BUTTONS BOTTOM */}
-        <div className="space-y-3">
+        <div className="space-y-3 pt-6 border-t border-gray-100">
+            {/* TASTO SALVA PROFILO */}
             <button onClick={handleSaveProfile} disabled={loading} className="w-full py-4 text-white rounded-2xl font-bold text-sm shadow-lg shadow-gray-200 active:scale-95 transition-all flex items-center justify-center gap-2" style={{ backgroundColor: colorHex }}>
-              <Save className="w-4 h-4" /> {loading ? 'Salvataggio...' : 'Salva Profilo'}
+              <Save className="w-4 h-4" /> {loading ? 'Salvataggio...' : 'Salva Modifiche'}
             </button>
-            <button onClick={async () => { if (window.confirm('Uscire?')) await supabase.auth.signOut() }} className="w-full py-4 text-red-500 font-bold text-sm bg-white rounded-2xl border border-gray-100 hover:bg-red-50 transition-colors flex items-center justify-center gap-2">
+            
+            {/* TASTO FACTORY RESET - PERICOLO */}
+            <button 
+                onClick={handleFactoryReset} 
+                disabled={resetLoading} 
+                className="w-full py-4 text-red-600 bg-red-50 border border-red-100 rounded-2xl font-bold text-sm hover:bg-red-100 transition-colors flex items-center justify-center gap-2"
+            >
+              <AlertOctagon className="w-4 h-4" /> 
+              {resetLoading ? 'Cancellazione in corso...' : 'RIPRISTINA DATI DI FABBRICA'}
+            </button>
+
+            {/* TASTO ESCI ACCOUNT */}
+            <button onClick={async () => { if (window.confirm('Uscire?')) await supabase.auth.signOut() }} className="w-full py-4 text-gray-500 font-bold text-sm bg-white rounded-2xl border border-gray-100 hover:bg-gray-50 transition-colors flex items-center justify-center gap-2">
               <LogOut className="w-4 h-4" /> Esci dall'account
             </button>
         </div>

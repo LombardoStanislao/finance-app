@@ -434,7 +434,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                     onChange={e => setNewBucketName(e.target.value)}
                     placeholder="Es. Fondo Emergenza, Vacanze..."
                     className="w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900"
-                    autoFocus
+                    // autoFocus RIMOSSO
                     />
                 </div>
                 

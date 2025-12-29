@@ -10,7 +10,7 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
-// Database types (adjust based on your actual schema)
+// Database types
 export interface Transaction {
   id: string
   user_id: string
@@ -34,6 +34,7 @@ export interface Category {
   budget_limit: number | null
   parent_id: string | null
   type: 'income' | 'expense'
+  rank?: number // Aggiunto per il Drag & Drop
   created_at: string
 }
 
@@ -41,11 +42,11 @@ export interface Bucket {
   id: string
   user_id: string
   name: string
-  allocation_percentage?: number // Mantenuto per compatibilità se usato altrove
-  current_amount?: number // Mantenuto per compatibilità se usato altrove
+  allocation_percentage?: number
+  current_amount?: number
   current_balance: number
   distribution_percentage: number
-  target_amount?: number // <--- NUOVO CAMPO TARGET
+  target_amount?: number
   created_at: string
   updated_at?: string
 }
@@ -56,15 +57,17 @@ export interface Investment {
   name: string | null
   type: 'ETF' | 'Obbligazioni' | 'Azioni' | 'Conto Deposito' | 'Crypto' | 'Altro'
   current_value: number
-  last_updated: string
   created_at: string
   updated_at?: string
+  // NUOVI CAMPI per automazione
+  ticker?: string | null
+  quantity?: number | null
+  is_automated?: boolean
 }
 
-export interface Asset {
+// NUOVA INTERFACCIA PROFILO (Per il Rate Limiting delle API)
+export interface Profile {
   id: string
-  type: 'liquidity' | 'btp' | 'etf' | 'crypto'
-  name: string
-  value: number
+  last_api_call: string | null
   updated_at: string
 }

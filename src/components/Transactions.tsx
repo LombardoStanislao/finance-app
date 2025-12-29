@@ -84,7 +84,6 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
 
       if (error) throw error
       
-      // Filtra le distribuzioni automatiche
       const filteredData = (data || []).filter(t => !t.description?.startsWith('Distribuzione automatica'))
       
       setTransactions(filteredData)
@@ -115,7 +114,38 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
         const { data: { user } } = await supabase.auth.getUser()
         if(!user) return
 
-        // CASO 1: Cancellazione ENTRATA
+        // 1. NUOVO: GESTIONE INVESTIMENTO
+        if (transaction.type === 'expense' && transaction.investment_id) {
+             const { data: investment } = await supabase
+                .from('investments')
+                .select('*')
+                .eq('id', transaction.investment_id)
+                .single()
+
+            if (investment) {
+                const qtyToRemove = (transaction as any).asset_quantity || 0
+                const amountToRemove = Math.abs(transaction.amount)
+
+                // Calcoli di sicurezza per non andare sotto zero
+                const newQuantity = Math.max(0, (investment.quantity || 0) - qtyToRemove)
+                const newInvested = Math.max(0, (investment.invested_amount || 0) - amountToRemove)
+                
+                // Ricalcolo valore corrente
+                let newCurrentValue = 0
+                if ((investment.quantity || 0) > 0) {
+                    const pricePerShare = investment.current_value / investment.quantity
+                    newCurrentValue = pricePerShare * newQuantity
+                }
+
+                await supabase.from('investments').update({
+                    quantity: newQuantity,
+                    invested_amount: newInvested,
+                    current_value: newCurrentValue
+                }).eq('id', investment.id)
+            }
+        }
+
+        // 2. CASO ENTRATA (Salvadanai)
         if (transaction.type === 'income') {
             const txTime = new Date(transaction.created_at).getTime()
             const timeStart = new Date(txTime - 2000).toISOString()
@@ -142,11 +172,7 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
                         if (bucket) {
                             const amountAddedToBucket = Math.abs(child.amount)
                             const newBalance = Math.max(0, (bucket.current_balance || 0) - amountAddedToBucket)
-                            
-                            await supabase
-                                .from('buckets')
-                                .update({ current_balance: newBalance })
-                                .eq('id', child.bucket_id)
+                            await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', child.bucket_id)
                         }
                     }
                     await supabase.from('transactions').delete().eq('id', child.id)
@@ -154,7 +180,7 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
             }
         }
 
-        // CASO 2: Cancellazione USCITA (Pagata con un Bucket)
+        // 3. CASO USCITA (Bucket)
         else if (transaction.type === 'expense' && transaction.bucket_id) {
             const { data: bucket } = await supabase
                 .from('buckets')
@@ -329,7 +355,6 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
                   className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex items-start justify-between active:scale-[0.99] transition-transform cursor-pointer group"
                 >
                   <div className="flex items-start gap-4 flex-1 min-w-0">
-                    {/* Icona */}
                     <div className={cn(
                         "w-10 h-10 rounded-full flex items-center justify-center shrink-0 mt-1",
                         t.type === 'income' ? "bg-emerald-50 text-emerald-600" :
@@ -341,7 +366,6 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
                          <TrendingDown className="w-5 h-5" />}
                     </div>
 
-                    {/* Testo */}
                     <div className="flex-1 min-w-0 pr-2">
                       <div className="flex flex-wrap items-center gap-2 mb-1">
                         <h3 className="font-bold text-gray-900 leading-tight break-words">
@@ -364,11 +388,14 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
                                 <span className="truncate max-w-[120px]">{getCategoryName(t.category_id)}</span>
                             </>
                         )}
+                        {/* TAG PER INVESTIMENTI */}
+                        {t.investment_id && (
+                            <span className="bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded-[4px] text-[10px] font-bold tracking-wide">ASSET</span>
+                        )}
                       </div>
                     </div>
                   </div>
 
-                  {/* Importo e Azioni */}
                   <div className="flex flex-col items-end gap-2 shrink-0 ml-2">
                     <span className={cn(
                       "font-bold text-base whitespace-nowrap",
@@ -380,7 +407,6 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
                       {formatCurrency(Math.abs(t.amount))}
                     </span>
                     
-                    {/* Tasto Cestino SEMPRE visibile e più grande area clic */}
                     <button
                       onClick={(e) => handleDelete(t, e)}
                       className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"

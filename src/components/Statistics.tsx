@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { ArrowLeft, TrendingUp, Calendar, BarChart3, Wallet, TrendingDown, Settings } from 'lucide-react'
+import { ArrowLeft, TrendingUp, BarChart3, Wallet, TrendingDown, Settings } from 'lucide-react'
 import { PieChart, Pie, Cell, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts'
 import { supabase, type Category } from '../lib/supabase'
 import { formatCurrency, cn } from '../lib/utils'
@@ -79,12 +79,11 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
   const [netWorthData, setNetWorthData] = useState<NetWorthDataPoint[]>([])
   
   // Filtri Temporali per le Torte
-  // Aggiunto 'CUSTOM' al tipo
   const [pieRange, setPieRange] = useState<'MONTH' | '6M' | 'YEAR' | 'CUSTOM'>('MONTH')
   const [selectedMonth, setSelectedMonth] = useState<number>(new Date().getMonth() + 1)
   const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear())
   
-  // Stati per date personalizzate (Default: inizio mese corrente -> oggi)
+  // Stati per date personalizzate
   const [customStart, setCustomStart] = useState<string>(
     new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0]
   )
@@ -102,7 +101,6 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
     loadInvestmentData()
   }, [])
 
-  // Aggiunto customStart e customEnd alle dipendenze
   useEffect(() => {
     if (allCategories.length > 0) {
       loadTransactionData()
@@ -146,6 +144,18 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
     } catch (error) { console.error(error) }
   }
 
+  // --- NUOVA FUNZIONE RICORSIVA PER TROVARE IL CAPOSTIPITE ---
+  function findRootCategory(categoryId: string): Category | undefined {
+      let current = allCategories.find(c => c.id === categoryId)
+      // Continua a salire finché c'è un genitore
+      while (current && current.parent_id) {
+          const parent = allCategories.find(c => c.id === current?.parent_id)
+          if (!parent) break // Sicurezza se il genitore non esiste
+          current = parent
+      }
+      return current
+  }
+
   async function loadTransactionData() {
     try {
       setLoading(true)
@@ -173,7 +183,6 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
             return
         }
         startDate = new Date(customStart).toISOString()
-        // Aggiungiamo l'orario di fine giornata alla data di fine
         endDate = new Date(customEnd + 'T23:59:59').toISOString()
       }
 
@@ -192,10 +201,16 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
       transactions?.forEach((transaction) => {
         if (transaction.category_id) {
           const val = Math.abs(transaction.amount)
+          
+          // --- LOGICA DI RAGGRUPPAMENTO RICORSIVA ---
+          // Usa la funzione findRootCategory per risalire fino alla radice assoluta
+          const rootCat = findRootCategory(transaction.category_id)
+          const targetId = rootCat ? rootCat.id : transaction.category_id
+
           if (transaction.type === 'expense') {
-            expenseMap.set(transaction.category_id, (expenseMap.get(transaction.category_id) || 0) + val)
+            expenseMap.set(targetId, (expenseMap.get(targetId) || 0) + val)
           } else if (transaction.type === 'income') {
-            incomeMap.set(transaction.category_id, (incomeMap.get(transaction.category_id) || 0) + val)
+            incomeMap.set(targetId, (incomeMap.get(targetId) || 0) + val)
           }
         }
       })

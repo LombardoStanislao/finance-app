@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { TrendingUp, TrendingDown, Wallet, PiggyBank, Edit2, Trash2, Settings, ArrowRightLeft, Calendar, AlertTriangle, CheckCircle2, ShoppingBag } from 'lucide-react'
-import { supabase, type Transaction, type Category, type Bucket } from '../lib/supabase'
+import { TrendingUp, TrendingDown, Wallet, PiggyBank, Trash2, Settings, ArrowRightLeft, AlertTriangle, CheckCircle2, ShoppingBag, BookOpen } from 'lucide-react'
+import { supabase, type Transaction, type Category } from '../lib/supabase'
 import { formatCurrency, formatDate, cn } from '../lib/utils'
 import TransactionForm from './TransactionForm'
 
@@ -14,12 +14,12 @@ interface BudgetProgress {
 interface DashboardProps {
   primaryColor: string
   profileUpdated: number
-  onAddTransaction: () => void
   onOpenSettings: () => void
   onOpenInvestments: () => void
+  onOpenGuide: () => void
 }
 
-export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings, onOpenInvestments }: DashboardProps) {
+export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings, onOpenInvestments, onOpenGuide }: DashboardProps) {
   const [netWorth, setNetWorth] = useState<number>(0)
   const [liquidity, setLiquidity] = useState<number>(0)
   const [investmentsTotal, setInvestmentsTotal] = useState<number>(0)
@@ -27,7 +27,6 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
   const [monthExpenses, setMonthExpenses] = useState<number>(0)
   const [recentTransactions, setRecentTransactions] = useState<Transaction[]>([])
   const [budgetProgress, setBudgetProgress] = useState<BudgetProgress[]>([])
-  const [buckets, setBuckets] = useState<Bucket[]>([])
   const [categories, setCategories] = useState<Category[]>([]) 
   const [loading, setLoading] = useState(true)
   const [displayName, setDisplayName] = useState<string>('')
@@ -65,7 +64,6 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
       const investmentsList = invRes.data || []
 
       setCategories(categoriesList)
-      setBuckets(bucketsList)
 
       // FILTRO: Nascondi le distribuzioni automatiche dalla lista recente
       const filteredRecent = transactions.filter(t => 
@@ -140,18 +138,59 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
   // --- LOGICA DI ROLLBACK PER LA CANCELLAZIONE ---
   async function handleDeleteTransaction(transaction: Transaction, e: React.MouseEvent) {
     e.stopPropagation()
-    if (!window.confirm('Eliminare questa transazione? L\'operazione annullerà anche eventuali movimenti collegati (es. distribuzioni salvadanai).')) return
+    if (!window.confirm('Eliminare questa transazione? L\'operazione annullerà anche eventuali movimenti collegati.')) return
 
     try {
         const { data: { user } } = await supabase.auth.getUser()
         if(!user) return
 
-        // CASO 1: Cancellazione ENTRATA (Potrebbe avere distribuzioni automatiche)
+        // 1. CASO INVESTIMENTO: Se sto cancellando un acquisto asset
+        if (transaction.type === 'expense' && transaction.investment_id) {
+            const { data: investment } = await supabase
+                .from('investments')
+                .select('*')
+                .eq('id', transaction.investment_id)
+                .single()
+
+            if (investment) {
+                const qtyToRemove = (transaction as any).asset_quantity || 0
+                const amountToRemove = Math.abs(transaction.amount)
+
+                const newQuantity = (investment.quantity || 0) - qtyToRemove
+                const newInvestedAmount = (investment.invested_amount || 0) - amountToRemove
+                
+                if (newQuantity <= 0.000001) {
+                     const confirmDeleteInv = window.confirm("Cancellando questa transazione, l'investimento collegato avrà 0 quote. Vuoi eliminare anche l'asset dal portafoglio?")
+                     if (confirmDeleteInv) {
+                         await supabase.from('investments').delete().eq('id', investment.id)
+                     } else {
+                         await supabase.from('investments').update({ 
+                             quantity: 0, 
+                             invested_amount: 0,
+                             current_value: 0 
+                         }).eq('id', investment.id)
+                     }
+                } else {
+                    let newCurrentValue = investment.current_value
+                    if (investment.quantity > 0) {
+                        const currentPrice = investment.current_value / investment.quantity
+                        newCurrentValue = currentPrice * newQuantity
+                    }
+
+                    await supabase.from('investments').update({
+                        quantity: newQuantity,
+                        invested_amount: Math.max(0, newInvestedAmount),
+                        current_value: newCurrentValue
+                    }).eq('id', investment.id)
+                }
+            }
+        }
+
+        // 2. CASO ENTRATA (Distribuzione automatica)
         if (transaction.type === 'income') {
-            // Cerchiamo le distribuzioni figlie create nello stesso istante (con tolleranza)
             const txTime = new Date(transaction.created_at).getTime()
-            const timeStart = new Date(txTime - 2000).toISOString() // -2 sec
-            const timeEnd = new Date(txTime + 5000).toISOString() // +5 sec
+            const timeStart = new Date(txTime - 2000).toISOString()
+            const timeEnd = new Date(txTime + 5000).toISOString()
 
             const { data: children } = await supabase
                 .from('transactions')
@@ -163,7 +202,6 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                 .lte('created_at', timeEnd)
 
             if (children && children.length > 0) {
-                // Per ogni figlio, dobbiamo TOGLIERE i soldi dal bucket dove erano finiti
                 for (const child of children) {
                     if (child.bucket_id) {
                         const { data: bucket } = await supabase
@@ -173,24 +211,17 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                             .single()
                         
                         if (bucket) {
-                            // child.amount è negativo (uscita dalla liquidità), quindi il valore assoluto è quanto è entrato nel bucket.
-                            // Sottraiamo questo valore per annullare l'operazione.
                             const amountAddedToBucket = Math.abs(child.amount)
                             const newBalance = Math.max(0, (bucket.current_balance || 0) - amountAddedToBucket)
-                            
-                            await supabase
-                                .from('buckets')
-                                .update({ current_balance: newBalance })
-                                .eq('id', child.bucket_id)
+                            await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', child.bucket_id)
                         }
                     }
-                    // Eliminiamo la transazione di distribuzione
                     await supabase.from('transactions').delete().eq('id', child.id)
                 }
             }
         }
-
-        // CASO 2: Cancellazione USCITA (Pagata con un Bucket)
+        
+        // 3. CASO USCITA (Pagata con Bucket)
         else if (transaction.type === 'expense' && transaction.bucket_id) {
             const { data: bucket } = await supabase
                 .from('buckets')
@@ -199,14 +230,9 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                 .single()
 
             if (bucket) {
-                // Se annullo una spesa, i soldi devono TORNARE nel bucket
                 const amountSpent = Math.abs(transaction.amount)
                 const newBalance = (bucket.current_balance || 0) + amountSpent
-                
-                await supabase
-                    .from('buckets')
-                    .update({ current_balance: newBalance })
-                    .eq('id', transaction.bucket_id)
+                await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', transaction.bucket_id)
             }
         }
 
@@ -214,7 +240,6 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
         const { error } = await supabase.from('transactions').delete().eq('id', transaction.id)
         if (error) throw error
 
-        // Ricarichiamo tutto per aggiornare le UI (Patrimonio, Liquidità, Budget...)
         fetchData()
     } catch (error) {
         console.error('Error deleting transaction:', error)
@@ -234,9 +259,18 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
            <p className="text-xs text-gray-400 font-medium mb-0.5">Bentornato,</p>
            <h1 className="text-xl font-bold text-gray-900 leading-none">{displayName}</h1>
         </div>
-        <button onClick={onOpenSettings} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-600 border border-gray-100 active:scale-95 transition-transform">
-            <Settings className="w-5 h-5" strokeWidth={2} />
-        </button>
+        <div className="flex gap-2">
+            <button 
+                onClick={onOpenGuide}
+                className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-blue-600 border border-gray-100 active:scale-95 transition-transform"
+                title="Guida all'uso"
+            >
+                <BookOpen className="w-5 h-5" strokeWidth={2} />
+            </button>
+            <button onClick={onOpenSettings} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-600 border border-gray-100 active:scale-95 transition-transform">
+                <Settings className="w-5 h-5" strokeWidth={2} />
+            </button>
+        </div>
       </div>
 
       <div className="max-w-md mx-auto px-4 py-6 space-y-8">
@@ -296,7 +330,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
           </div>
         </div>
 
-        {/* BUDGET CARDS */}
+        {/* BUDGET CARDS - RIPRISTINATO */}
         {budgetProgress.length > 0 && (
           <div>
             <div className="flex items-center justify-between px-1 mb-3">
@@ -370,7 +404,6 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                               <h3 className="font-bold text-gray-900 leading-tight break-words">{t.description || (t.type === 'transfer' ? 'Trasferimento' : getCategoryName(t.category_id || ''))}</h3>
                           </div>
                           
-                          {/* Modifica qui: Data e Categoria in riga */}
                           <div className="flex flex-wrap items-center gap-1.5 text-xs text-gray-400 font-medium">
                               <span>{formatDate(t.date)}</span>
                               {t.category_id && t.type !== 'transfer' && (
@@ -378,6 +411,9 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                                   <span className="text-gray-300">•</span>
                                   <span className="truncate max-w-[150px] text-gray-500">{getCategoryName(t.category_id)}</span>
                                 </>
+                              )}
+                              {t.investment_id && (
+                                  <span className="bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded text-[10px] font-bold">INV</span>
                               )}
                           </div>
                         </div>

@@ -8,47 +8,59 @@ import Transactions from './components/Transactions'
 import BucketsPage from './components/BucketsPage'
 import Statistics from './components/Statistics'
 import InvestmentsPage from './components/InvestmentsPage'
+import GuidePage from './components/GuidePage'
 import BottomNav from './components/BottomNav'
 import TransactionForm from './components/TransactionForm'
 import './App.css'
 
-type View = 'dashboard' | 'settings' | 'transactions' | 'buckets' | 'statistics' | 'investments'
+type View = 'dashboard' | 'settings' | 'transactions' | 'buckets' | 'statistics' | 'investments' | 'guide'
 
 function App() {
   const [session, setSession] = useState<Session | null>(null)
   const [loading, setLoading] = useState(true)
   const [currentView, setCurrentView] = useState<View>('dashboard')
-  const [primaryColor, setPrimaryColor] = useState<string>('blue')
+  
+  // Default iniziale (Blu) finché non carichiamo il profilo
+  const [primaryColor, setPrimaryColor] = useState<string>('#2563eb')
+  
   const [profileUpdated, setProfileUpdated] = useState(0)
   const [isTransactionFormOpen, setIsTransactionFormOpen] = useState(false)
 
   useEffect(() => {
-    // Load primary color from localStorage
-    const savedColor = localStorage.getItem('primaryColor')
-    if (savedColor) {
-      // Accept both HEX colors and preset names
-      setPrimaryColor(savedColor)
-    } else {
-      // Default to blue if nothing is saved
-      setPrimaryColor('blue')
-    }
-
-    // Get initial session
+    // 1. Controlla sessione
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session)
+      if (session) loadUserTheme(session.user.id)
       setLoading(false)
     })
 
-    // Listen for auth changes
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    // 2. Ascolta cambi auth
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session)
+      if (session) loadUserTheme(session.user.id)
     })
 
     return () => subscription.unsubscribe()
   }, [])
 
+  async function loadUserTheme(userId: string) {
+    try {
+        const { data } = await supabase
+            .from('profiles')
+            .select('theme_color')
+            .eq('id', userId)
+            .maybeSingle()
+        
+        if (data?.theme_color) {
+            setPrimaryColor(data.theme_color)
+        }
+    } catch (error) {
+        console.error("Errore caricamento tema:", error)
+    }
+  }
+
+  // Questa funzione aggiorna lo stato locale immediatamente per feedback visivo rapido
+  // (Il salvataggio vero su DB lo fa Settings.tsx)
   function handleColorChange(color: string) {
     setPrimaryColor(color)
   }
@@ -79,8 +91,15 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
-      {/* Main Content Area */}
       <main className="flex-1 pb-20">
+        
+        {currentView === 'guide' && (
+          <GuidePage 
+            onBack={() => setCurrentView('dashboard')}
+            primaryColor={primaryColor}
+          />
+        )}
+
         {currentView === 'settings' && (
           <Settings
             onBack={() => setCurrentView('dashboard')}
@@ -114,6 +133,7 @@ function App() {
           <InvestmentsPage
             onBack={() => setCurrentView('dashboard')}
             onOpenSettings={() => setCurrentView('settings')}
+            onOpenGuide={() => setCurrentView('guide')}
             primaryColor={primaryColor}
           />
         )}
@@ -121,28 +141,27 @@ function App() {
           <Dashboard
             primaryColor={primaryColor}
             profileUpdated={profileUpdated}
-            onAddTransaction={handleAddTransaction}
             onOpenSettings={() => setCurrentView('settings')}
             onOpenInvestments={() => setCurrentView('investments')}
+            onOpenGuide={() => setCurrentView('guide')}
           />
         )}
       </main>
 
-      {/* Bottom Navigation */}
-      <BottomNav
-        currentView={currentView}
-        onNavigate={handleNavigate}
-        onAddTransaction={handleAddTransaction}
-        primaryColor={primaryColor}
-      />
+      {currentView !== 'guide' && (
+        <BottomNav
+            currentView={currentView === 'settings' ? 'dashboard' : currentView as any} 
+            onNavigate={(view) => handleNavigate(view as View)}
+            onAddTransaction={handleAddTransaction}
+            primaryColor={primaryColor}
+        />
+      )}
       
-      {/* Global Transaction Form Modal - Shared across all pages */}
       <TransactionForm
         isOpen={isTransactionFormOpen}
         onClose={() => setIsTransactionFormOpen(false)}
         onSuccess={() => {
           setIsTransactionFormOpen(false)
-          // Force re-render to refresh data
           setProfileUpdated(prev => prev + 1)
         }}
         primaryColor={primaryColor}

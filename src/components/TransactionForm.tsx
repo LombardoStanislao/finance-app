@@ -467,7 +467,7 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                     onChange={(e) => setAmount(e.target.value)}
                     className="w-full pl-10 pr-4 py-4 text-4xl font-bold text-gray-900 bg-gray-50 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all placeholder:text-gray-200"
                     placeholder="0.00"
-                    autoFocus={!editingId}
+                    // autoFocus rimosso come richiesto
                     />
                 </div>
             </div>

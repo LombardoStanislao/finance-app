@@ -32,6 +32,7 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
 
   useEffect(() => {
     loadTransactions()
+    // Reset category filter if type changes and category doesn't match
     if (filterCategory !== 'all') {
       const selectedCategory = categories.find(c => c.id === filterCategory)
       if (selectedCategory && filterType !== 'all' && selectedCategory.type !== filterType) {
@@ -84,6 +85,7 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
 
       if (error) throw error
       
+      // Filtra le distribuzioni automatiche dalla vista principale per pulizia
       const filteredData = (data || []).filter(t => !t.description?.startsWith('Distribuzione automatica'))
       
       setTransactions(filteredData)
@@ -114,8 +116,9 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
         const { data: { user } } = await supabase.auth.getUser()
         if(!user) return
 
-        // 1. NUOVO: GESTIONE INVESTIMENTO
-        if (transaction.type === 'expense' && transaction.investment_id) {
+        // 1. GESTIONE INVESTIMENTO (Acquisto o Vendita)
+        // Se la transazione ha un investment_id, dobbiamo aggiornare l'asset.
+        if (transaction.investment_id) {
              const { data: investment } = await supabase
                 .from('investments')
                 .select('*')
@@ -123,29 +126,44 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
                 .single()
 
             if (investment) {
-                const qtyToRemove = (transaction as any).asset_quantity || 0
-                const amountToRemove = Math.abs(transaction.amount)
-
-                // Calcoli di sicurezza per non andare sotto zero
-                const newQuantity = Math.max(0, (investment.quantity || 0) - qtyToRemove)
-                const newInvested = Math.max(0, (investment.invested_amount || 0) - amountToRemove)
+                // Recuperiamo la quantità di quote movimentata (salvata in asset_quantity)
+                const qtyChange = (transaction as any).asset_quantity || 0 
                 
-                // Ricalcolo valore corrente
-                let newCurrentValue = 0
+                // --- RIPRISTINO QUANTITÀ ---
+                // Se era acquisto (+qty), dobbiamo togliere: new = curr - qty
+                // Se era vendita (-qty), dobbiamo aggiungere: new = curr - (-qty) = curr + qty
+                const newQty = Math.max(0, (investment.quantity || 0) - qtyChange)
+                
+                // --- RIPRISTINO CAPITALE INVESTITO ---
+                // Funziona per i TRANSFER (Capitale).
+                // Se era acquisto (amount < 0), invested era aumentato. Ora deve scendere (+ amount negativo)
+                // Se era vendita (amount > 0), invested era sceso. Ora deve salire (+ amount positivo)
+                let deltaInvested = 0
+                if (transaction.type === 'transfer') {
+                    deltaInvested = transaction.amount 
+                }
+                
+                const newInvested = Math.max(0, (investment.invested_amount || 0) + deltaInvested)
+                
+                // --- RICALCOLO VALORE CORRENTE (Stima) ---
+                // Manteniamo il prezzo per quota attuale per ricalcolare il totale
+                let newCurrentValue = investment.current_value
                 if ((investment.quantity || 0) > 0) {
                     const pricePerShare = investment.current_value / investment.quantity
-                    newCurrentValue = pricePerShare * newQuantity
+                    newCurrentValue = pricePerShare * newQty
+                } else if (newQty === 0) {
+                    newCurrentValue = 0
                 }
 
                 await supabase.from('investments').update({
-                    quantity: newQuantity,
+                    quantity: newQty,
                     invested_amount: newInvested,
                     current_value: newCurrentValue
                 }).eq('id', investment.id)
             }
         }
 
-        // 2. CASO ENTRATA (Salvadanai)
+        // 2. CASO ENTRATA (Distribuzioni automatiche Salvadanai)
         if (transaction.type === 'income') {
             const txTime = new Date(transaction.created_at).getTime()
             const timeStart = new Date(txTime - 2000).toISOString()
@@ -180,8 +198,8 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
             }
         }
 
-        // 3. CASO USCITA (Bucket)
-        else if (transaction.type === 'expense' && transaction.bucket_id) {
+        // 3. CASO USCITA/TRANSFER DA BUCKET (Restituzione fondi)
+        else if ((transaction.type === 'expense' || transaction.type === 'transfer') && transaction.bucket_id) {
             const { data: bucket } = await supabase
                 .from('buckets')
                 .select('current_balance')

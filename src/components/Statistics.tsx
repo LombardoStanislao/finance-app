@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { ArrowLeft, TrendingUp, BarChart3, Wallet, TrendingDown, Settings } from 'lucide-react'
+import { ArrowLeft, TrendingUp, BarChart3, Wallet, TrendingDown, Settings, CandlestickChart } from 'lucide-react'
 import { PieChart, Pie, Cell, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts'
 import { supabase, type Category } from '../lib/supabase'
 import { formatCurrency, cn } from '../lib/utils'
@@ -42,7 +42,6 @@ const INVESTMENT_COLORS: Record<string, string> = {
   'Altro': '#6b7280'
 }
 
-// Renderizza la label esterna
 const renderCustomizedLabel = (props: any) => {
   const { cx, cy, midAngle, outerRadius, percent } = props
   const RADIAN = Math.PI / 180
@@ -72,18 +71,18 @@ const renderCustomizedLabel = (props: any) => {
 export default function Statistics({ onBack, onOpenSettings, primaryColor }: StatisticsProps) {
   const [loading, setLoading] = useState(true)
   
-  // Dati Grafici
   const [expensesByCategory, setExpensesByCategory] = useState<CategoryData[]>([])
   const [incomeByCategory, setIncomeByCategory] = useState<CategoryData[]>([])
   const [investmentData, setInvestmentData] = useState<InvestmentDistribution[]>([])
   const [netWorthData, setNetWorthData] = useState<NetWorthDataPoint[]>([])
   
-  // Filtri Temporali per le Torte
+  // NUOVO: Stato per il Profitto/Perdita Trading
+  const [tradingPL, setTradingPL] = useState<number>(0)
+  
   const [pieRange, setPieRange] = useState<'MONTH' | '6M' | 'YEAR' | 'CUSTOM'>('MONTH')
   const [selectedMonth, setSelectedMonth] = useState<number>(new Date().getMonth() + 1)
   const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear())
   
-  // Stati per date personalizzate
   const [customStart, setCustomStart] = useState<string>(
     new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0]
   )
@@ -91,9 +90,7 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
     new Date().toISOString().split('T')[0]
   )
   
-  // Filtro Temporale per il Grafico Lineare (Patrimonio)
   const [lineRange, setLineRange] = useState<'1M' | '3M' | '6M' | 'YTD' | 'ALL'>('3M')
-  
   const [allCategories, setAllCategories] = useState<Category[]>([])
 
   useEffect(() => {
@@ -144,13 +141,11 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
     } catch (error) { console.error(error) }
   }
 
-  // --- NUOVA FUNZIONE RICORSIVA PER TROVARE IL CAPOSTIPITE ---
   function findRootCategory(categoryId: string): Category | undefined {
       let current = allCategories.find(c => c.id === categoryId)
-      // Continua a salire finché c'è un genitore
       while (current && current.parent_id) {
           const parent = allCategories.find(c => c.id === current?.parent_id)
-          if (!parent) break // Sicurezza se il genitore non esiste
+          if (!parent) break 
           current = parent
       }
       return current
@@ -165,7 +160,6 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
       let startDate: string
       let endDate: string
 
-      // Logica intervallo temporale per le Torte
       if (pieRange === 'MONTH') {
         startDate = new Date(selectedYear, selectedMonth - 1, 1).toISOString()
         endDate = new Date(selectedYear, selectedMonth, 0, 23, 59, 59).toISOString()
@@ -177,7 +171,6 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
         startDate = new Date(selectedYear, 0, 1).toISOString()
         endDate = new Date(selectedYear, 11, 31, 23, 59, 59).toISOString()
       } else {
-        // CUSTOM RANGE
         if (!customStart || !customEnd) {
             setLoading(false)
             return
@@ -188,7 +181,7 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
 
       const { data: transactions, error } = await supabase
         .from('transactions')
-        .select('amount, category_id, type')
+        .select('amount, category_id, type, investment_id')
         .eq('user_id', user.id)
         .gte('date', startDate)
         .lte('date', endDate)
@@ -197,13 +190,21 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
 
       const expenseMap = new Map<string, number>()
       const incomeMap = new Map<string, number>()
+      let totalTradingPL = 0 // Variabile per accumulare P&L
 
       transactions?.forEach((transaction) => {
-        if (transaction.category_id) {
+        // Logica P&L Trading:
+        // Se ha un investment_id E non è un transfer (quindi è income o expense), è profitto/perdita realizzato.
+        if (transaction.investment_id && transaction.type !== 'transfer') {
+            const val = Number(transaction.amount) // Income è pos, Expense è neg
+            totalTradingPL += val
+        }
+
+        // Logica Categorie Standard (Escludiamo trading)
+        const isTradingPL = transaction.investment_id !== null && transaction.type !== 'transfer'
+        
+        if (transaction.category_id && !isTradingPL) {
           const val = Math.abs(transaction.amount)
-          
-          // --- LOGICA DI RAGGRUPPAMENTO RICORSIVA ---
-          // Usa la funzione findRootCategory per risalire fino alla radice assoluta
           const rootCat = findRootCategory(transaction.category_id)
           const targetId = rootCat ? rootCat.id : transaction.category_id
 
@@ -214,6 +215,8 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
           }
         }
       })
+
+      setTradingPL(totalTradingPL)
 
       const formatData = (map: Map<string, number>) => {
         return Array.from(map.entries()).map(([categoryId, value], index) => {
@@ -309,7 +312,6 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
   const currentYear = new Date().getFullYear()
   const years = Array.from({ length: 5 }, (_, i) => currentYear - 2 + i)
 
-  // Helper per calcolare totale per tooltip percentuale
   const totalIncome = incomeByCategory.reduce((sum, item) => sum + item.value, 0)
   const totalExpense = expensesByCategory.reduce((sum, item) => sum + item.value, 0)
   const totalInvestments = investmentData.reduce((sum, item) => sum + item.value, 0)
@@ -529,6 +531,22 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
             </div>
           )}
         </div>
+
+        {/* NUOVA CARD TRADING P&L (SOLO SE C'È QUALCOSA) */}
+        {Math.abs(tradingPL) > 0.01 && (
+            <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex flex-col items-center text-center">
+                <div className={cn("p-2 rounded-xl mb-2", tradingPL >= 0 ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600")}>
+                    <CandlestickChart className="w-6 h-6" />
+                </div>
+                <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">Trading P&L Realizzato</p>
+                <p className={cn("text-3xl font-black tracking-tight", tradingPL >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                    {tradingPL > 0 ? '+' : ''}{formatCurrency(tradingPL)}
+                </p>
+                <p className="text-[10px] text-gray-400 mt-2 font-medium">
+                    Guadagno/Perdita da vendite nel periodo selezionato
+                </p>
+            </div>
+        )}
 
         {/* CARD ASSET ALLOCATION */}
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">

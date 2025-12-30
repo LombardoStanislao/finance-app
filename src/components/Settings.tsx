@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { ArrowLeft, Save, Plus, Edit2, Trash2, X, LogOut, User, Palette, Layers, CheckCircle2, ArrowUpDown, AlertTriangle, GripVertical, AlertOctagon, Wallet, ChevronRight } from 'lucide-react'
+import { ArrowLeft, Save, Plus, Edit2, Trash2, X, LogOut, User, Palette, Layers, CheckCircle2, ArrowUpDown, AlertTriangle, GripVertical, AlertOctagon, Wallet, ChevronRight, Lock } from 'lucide-react'
 import { supabase, type Category } from '../lib/supabase'
 import { cn } from '../lib/utils'
 
@@ -35,7 +35,6 @@ interface CategoryWithChildren extends Category {
   children?: CategoryWithChildren[]
 }
 
-// Estensione interfaccia Category per includere il rank
 interface CategoryWithRank extends Category {
     rank?: number
 }
@@ -75,6 +74,8 @@ function SortableCategoryItem({
         position: 'relative' as const,
     };
 
+    const isSystemCategory = category.name === 'Commissioni Investimenti';
+
     return (
         <div ref={setNodeRef} style={style} className={cn("group touch-none", isDragging && "opacity-50")}>
             <div className={cn(
@@ -82,15 +83,16 @@ function SortableCategoryItem({
                 isDragging ? "bg-blue-50 border-blue-100 shadow-sm" : "hover:bg-gray-50 bg-white"
             )}>
                 <div className="flex items-center gap-2 flex-1 min-w-0">
-                    {/* Drag Handle - Visibile solo se non disabilitato (Manuale) */}
+                    {/* Drag Handle - Visibile solo se non disabilitato e non di sistema (opzionale: permettiamo il reorder anche alle sistema) */}
                     {!disabled && (
                          <div {...attributes} {...listeners} className="cursor-grab active:cursor-grabbing p-1 -ml-1 text-gray-300 hover:text-gray-500 touch-none">
                             <GripVertical className="w-4 h-4" />
                         </div>
                     )}
                    
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex items-center gap-2">
                         <p className="font-medium text-gray-900 text-sm truncate">{category.name}</p>
+                        {isSystemCategory && <Lock className="w-3 h-3 text-gray-400" />}
                         {category.budget_limit && (
                             <p className="text-[10px] text-gray-400">
                                 Budget: €{category.budget_limit.toFixed(0)}
@@ -99,13 +101,33 @@ function SortableCategoryItem({
                     </div>
                 </div>
                 
-                {/* Actions (Non draggabili) */}
+                {/* Actions */}
                 <div className="flex items-center gap-1">
-                    <button onClick={() => onEdit(category)} className="p-1.5 hover:bg-gray-200 rounded transition-colors">
-                        <Edit2 className="w-3.5 h-3.5 text-gray-500" />
+                    <button 
+                        onClick={() => {
+                            if (isSystemCategory) {
+                                alert('Questa categoria è gestita automaticamente dal sistema e non può essere modificata.');
+                                return;
+                            }
+                            onEdit(category);
+                        }} 
+                        className={cn("p-1.5 rounded transition-colors", isSystemCategory ? "opacity-30 cursor-not-allowed text-gray-400" : "hover:bg-gray-200 text-gray-500")}
+                        title={isSystemCategory ? "Categoria di sistema" : "Modifica"}
+                    >
+                        <Edit2 className="w-3.5 h-3.5" />
                     </button>
-                    <button onClick={() => onDelete(category.id)} className="p-1.5 hover:bg-red-50 rounded transition-colors">
-                        <Trash2 className="w-3.5 h-3.5 text-red-500" />
+                    <button 
+                        onClick={() => {
+                            if (isSystemCategory) {
+                                alert('Questa categoria è fondamentale per il tracciamento degli investimenti e non può essere eliminata.');
+                                return;
+                            }
+                            onDelete(category.id);
+                        }} 
+                        className={cn("p-1.5 rounded transition-colors", isSystemCategory ? "opacity-30 cursor-not-allowed text-gray-400" : "hover:bg-red-50 text-red-500")}
+                        title={isSystemCategory ? "Categoria di sistema" : "Elimina"}
+                    >
+                        <Trash2 className="w-3.5 h-3.5" />
                     </button>
                 </div>
             </div>
@@ -147,7 +169,7 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
   const [editCategoryType, setEditCategoryType] = useState<'income' | 'expense'>('expense')
   const [editCategoryLoading, setEditCategoryLoading] = useState(false)
 
-  // --- STATE: Colore (Inizializzato con primaryColor) ---
+  // --- STATE: Colore ---
   const [colorHex, setColorHex] = useState<string>(primaryColor)
 
   // --- DND SENSORS ---
@@ -170,7 +192,6 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     loadCategories()
   }, [])
 
-  // Sincronizza lo stato se primaryColor cambia dall'esterno (es. caricamento iniziale)
   useEffect(() => {
     setColorHex(primaryColor)
   }, [primaryColor])
@@ -196,10 +217,9 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     }
   }
 
-  // Gestione cambio colore live (Anteprima immediata)
   function handleLocalColorChange(val: string) {
       setColorHex(val)
-      onColorChange(val) // Applica subito all'app per feedback visivo
+      onColorChange(val) 
   }
 
   async function handleSaveProfile(e: React.FormEvent) {
@@ -213,13 +233,13 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
       if (userError) throw userError
       if (!user) throw new Error('Utente non autenticato')
 
-      // 1. Aggiorna Nome (Auth Metadata)
+      // 1. Aggiorna Nome
       const { error: authErr } = await supabase.auth.updateUser({
         data: { display_name: displayName }
       })
       if (authErr) throw authErr
 
-      // 2. Aggiorna Colore (Database Profiles)
+      // 2. Aggiorna Colore
       const { error: profileErr } = await supabase
         .from('profiles')
         .upsert({ 
@@ -512,6 +532,13 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
   async function handleEditCategory(e: React.FormEvent) {
     e.preventDefault()
     if (!editingCategory) return
+    
+    // SAFETY CHECK SERVER-SIDE
+    if (editingCategory.name === 'Commissioni Investimenti') {
+        alert('Modifica non consentita per categoria di sistema.');
+        return;
+    }
+
     setEditCategoryLoading(true)
     setCategoryError(null)
 
@@ -541,9 +568,9 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
   async function handleDeleteCategory(categoryId: string) {
     const cat = categories.find(c => c.id === categoryId)
     
-    // Protezione per categoria di sistema
-    if (cat?.name === 'Investimenti') {
-        alert('Questa è una categoria di sistema necessaria per il tracciamento degli investimenti. Non può essere eliminata.')
+    // BLOCCO ELIMINAZIONE PER CATEGORIA DI SISTEMA
+    if (cat?.name === 'Commissioni Investimenti') {
+        alert('Questa è una categoria di sistema per le commissioni. Non può essere eliminata.')
         return
     }
 
@@ -675,7 +702,7 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
               />
             </div>
             
-            {/* COLOR PICKER AGGIORNATO (NATIVO + HEX) */}
+            {/* COLOR PICKER AGGIORNATO */}
             <div>
                 <label className="text-xs font-bold text-gray-500 uppercase mb-2 block">Colore Tema Principale</label>
                 <div className="flex gap-3 items-center">

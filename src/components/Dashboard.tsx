@@ -65,23 +65,23 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
 
       setCategories(categoriesList)
 
-      // FILTRO: Nascondi le distribuzioni automatiche dalla lista recente
+      // FILTRO LISTA: Visualizziamo tutto nella lista recente per chiarezza
       const filteredRecent = transactions.filter(t => 
         !t.description?.startsWith('Distribuzione automatica')
       )
       setRecentTransactions(filteredRecent.slice(0, 5))
 
-      // 2. Calcoli Liquidità
+      // 2. Calcoli Liquidità (Include TUTTO, anche P&L trading perché sono soldi veri sul conto)
       const totalLiquidity = transactions.reduce((sum, t) => sum + (Number(t.amount) || 0), 0)
       setLiquidity(totalLiquidity)
 
-      // 3. Totali
+      // 3. Totali Patrimonio
       const totalBuckets = bucketsList.reduce((sum, b) => sum + (b.current_balance || 0), 0)
       const totalInvestments = investmentsList.reduce((sum, i) => sum + (i.current_value || 0), 0)
       setInvestmentsTotal(totalInvestments)
       setNetWorth(totalLiquidity + totalBuckets + totalInvestments)
 
-      // 4. Mese Corrente
+      // 4. Mese Corrente (QUI FILTRIAMO IL TRADING P&L)
       const now = new Date()
       const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
       const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59).toISOString()
@@ -91,16 +91,20 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
 
       transactions.forEach(t => {
         const d = new Date(t.date).toISOString()
-        if (d >= monthStart && d <= monthEnd) {
+        // Se è una transazione di investimento (P&L realizzato), NON la contiamo nel flusso di cassa mensile "operativo"
+        // Questo evita che una grossa vendita in perdita sembri una "spesa folle" nel grafico mensile
+        const isTradingPL = t.investment_id !== null && (t.type === 'income' || t.type === 'expense')
+
+        if (d >= monthStart && d <= monthEnd && !isTradingPL) {
             const val = Number(t.amount) || 0
             if (t.type === 'income') mIncome += val
-            else if (t.type === 'expense') mExpenses += val
+            else if (t.type === 'expense') mExpenses += Math.abs(val)
         }
       })
       setMonthIncome(mIncome)
       setMonthExpenses(mExpenses)
 
-      // 5. Calcolo Budget
+      // 5. Calcolo Budget (Filtriamo anche qui il trading P&L)
       const categoriesWithBudget = categoriesList.filter(c => c.budget_limit && c.budget_limit > 0)
       const budgetsData: BudgetProgress[] = []
 
@@ -108,7 +112,10 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
         const expensesByCat = new Map<string, number>()
         transactions.forEach(t => {
             const d = new Date(t.date).toISOString()
-            if (t.type === 'expense' && t.category_id && d >= monthStart && d <= monthEnd) {
+            const isTradingPL = t.investment_id !== null
+            
+            // Contiamo solo le spese vere, non le minusvalenze di trading
+            if (t.type === 'expense' && t.category_id && d >= monthStart && d <= monthEnd && !isTradingPL) {
                 const current = expensesByCat.get(t.category_id) || 0
                 expensesByCat.set(t.category_id, current + Math.abs(Number(t.amount)))
             }
@@ -135,7 +142,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
     }
   }
 
-  // --- LOGICA DI ROLLBACK PER LA CANCELLAZIONE ---
+  // --- LOGICA DI ROLLBACK ---
   async function handleDeleteTransaction(transaction: Transaction, e: React.MouseEvent) {
     e.stopPropagation()
     if (!window.confirm('Eliminare questa transazione? L\'operazione annullerà anche eventuali movimenti collegati.')) return
@@ -144,107 +151,68 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
         const { data: { user } } = await supabase.auth.getUser()
         if(!user) return
 
-        // 1. CASO INVESTIMENTO: Se sto cancellando un acquisto asset
-        if (transaction.type === 'expense' && transaction.investment_id) {
-            const { data: investment } = await supabase
-                .from('investments')
-                .select('*')
-                .eq('id', transaction.investment_id)
-                .single()
+        // 1. CASO INVESTIMENTO (ACQUISTO o VENDITA)
+        if (transaction.investment_id) {
+             const { data: investment } = await supabase.from('investments').select('*').eq('id', transaction.investment_id).single()
+             if (investment) {
+                 // Recuperiamo la quantità di quote movimentata (salvata in asset_quantity)
+                 const qtyChange = (transaction as any).asset_quantity || 0 
+                 
+                 // Ripristiniamo la quantità: 
+                 // Se era acquisto (+qty), dobbiamo togliere -> new = curr - qty
+                 // Se era vendita (-qty), dobbiamo aggiungere -> new = curr - (-qty) = curr + qty
+                 const newQty = Math.max(0, (investment.quantity || 0) - qtyChange)
+                 
+                 // Ripristiniamo il capitale investito (Solo per i Transfer):
+                 // Se era acquisto (amount < 0), invested era aumentato. Ora deve scendere (+ amount negativo)
+                 // Se era vendita (amount > 0), invested era sceso. Ora deve salire (+ amount positivo)
+                 let deltaInvested = 0
+                 if (transaction.type === 'transfer') {
+                     deltaInvested = transaction.amount 
+                 }
+                 
+                 const newInvested = Math.max(0, (investment.invested_amount || 0) + deltaInvested)
+                 
+                 // Ricalcolo valore corrente stimato
+                 let newCurrentValue = investment.current_value
+                 if ((investment.quantity || 0) > 0) {
+                     const price = investment.current_value / investment.quantity
+                     newCurrentValue = price * newQty
+                 }
 
-            if (investment) {
-                const qtyToRemove = (transaction as any).asset_quantity || 0
-                const amountToRemove = Math.abs(transaction.amount)
-
-                const newQuantity = (investment.quantity || 0) - qtyToRemove
-                const newInvestedAmount = (investment.invested_amount || 0) - amountToRemove
-                
-                if (newQuantity <= 0.000001) {
-                     const confirmDeleteInv = window.confirm("Cancellando questa transazione, l'investimento collegato avrà 0 quote. Vuoi eliminare anche l'asset dal portafoglio?")
-                     if (confirmDeleteInv) {
-                         await supabase.from('investments').delete().eq('id', investment.id)
-                     } else {
-                         await supabase.from('investments').update({ 
-                             quantity: 0, 
-                             invested_amount: 0,
-                             current_value: 0 
-                         }).eq('id', investment.id)
-                     }
-                } else {
-                    let newCurrentValue = investment.current_value
-                    if (investment.quantity > 0) {
-                        const currentPrice = investment.current_value / investment.quantity
-                        newCurrentValue = currentPrice * newQuantity
-                    }
-
-                    await supabase.from('investments').update({
-                        quantity: newQuantity,
-                        invested_amount: Math.max(0, newInvestedAmount),
-                        current_value: newCurrentValue
-                    }).eq('id', investment.id)
-                }
-            }
+                 await supabase.from('investments').update({
+                     quantity: newQty,
+                     invested_amount: newInvested,
+                     current_value: newCurrentValue
+                 }).eq('id', investment.id)
+             }
         }
 
-        // 2. CASO ENTRATA (Distribuzione automatica)
+        // 2. CASO ENTRATA (Distribuzione automatica bucket)
         if (transaction.type === 'income') {
             const txTime = new Date(transaction.created_at).getTime()
             const timeStart = new Date(txTime - 2000).toISOString()
             const timeEnd = new Date(txTime + 5000).toISOString()
-
-            const { data: children } = await supabase
-                .from('transactions')
-                .select('*')
-                .eq('user_id', user.id)
-                .eq('type', 'transfer')
-                .ilike('description', 'Distribuzione automatica%')
-                .gte('created_at', timeStart)
-                .lte('created_at', timeEnd)
-
-            if (children && children.length > 0) {
+            const { data: children } = await supabase.from('transactions').select('*').eq('user_id', user.id).eq('type', 'transfer').ilike('description', 'Distribuzione automatica%').gte('created_at', timeStart).lte('created_at', timeEnd)
+            if (children) {
                 for (const child of children) {
                     if (child.bucket_id) {
-                        const { data: bucket } = await supabase
-                            .from('buckets')
-                            .select('current_balance')
-                            .eq('id', child.bucket_id)
-                            .single()
-                        
-                        if (bucket) {
-                            const amountAddedToBucket = Math.abs(child.amount)
-                            const newBalance = Math.max(0, (bucket.current_balance || 0) - amountAddedToBucket)
-                            await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', child.bucket_id)
-                        }
+                        const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', child.bucket_id).single()
+                        if (bucket) await supabase.from('buckets').update({ current_balance: Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount)) }).eq('id', child.bucket_id)
                     }
                     await supabase.from('transactions').delete().eq('id', child.id)
                 }
             }
-        }
-        
-        // 3. CASO USCITA (Pagata con Bucket)
-        else if (transaction.type === 'expense' && transaction.bucket_id) {
-            const { data: bucket } = await supabase
-                .from('buckets')
-                .select('current_balance')
-                .eq('id', transaction.bucket_id)
-                .single()
-
-            if (bucket) {
-                const amountSpent = Math.abs(transaction.amount)
-                const newBalance = (bucket.current_balance || 0) + amountSpent
-                await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', transaction.bucket_id)
-            }
+        } 
+        // 3. CASO SPESA DA BUCKET (Restituzione fondi)
+        else if ((transaction.type === 'expense' || transaction.type === 'transfer') && transaction.bucket_id) {
+            const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', transaction.bucket_id).single()
+            if (bucket) await supabase.from('buckets').update({ current_balance: (bucket.current_balance || 0) + Math.abs(transaction.amount) }).eq('id', transaction.bucket_id)
         }
 
-        // Infine eliminiamo la transazione principale
-        const { error } = await supabase.from('transactions').delete().eq('id', transaction.id)
-        if (error) throw error
-
+        await supabase.from('transactions').delete().eq('id', transaction.id)
         fetchData()
-    } catch (error) {
-        console.error('Error deleting transaction:', error)
-        alert('Errore durante l\'eliminazione')
-    }
+    } catch (error) { console.error(error); alert('Errore durante l\'eliminazione') }
   }
 
   function getCategoryName(id: string) { return categories.find(c => c.id === id)?.name || 'Sconosciuta' }
@@ -260,16 +228,8 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
            <h1 className="text-xl font-bold text-gray-900 leading-none">{displayName}</h1>
         </div>
         <div className="flex gap-2">
-            <button 
-                onClick={onOpenGuide}
-                className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-blue-600 border border-gray-100 active:scale-95 transition-transform"
-                title="Guida all'uso"
-            >
-                <BookOpen className="w-5 h-5" strokeWidth={2} />
-            </button>
-            <button onClick={onOpenSettings} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-600 border border-gray-100 active:scale-95 transition-transform">
-                <Settings className="w-5 h-5" strokeWidth={2} />
-            </button>
+            <button onClick={onOpenGuide} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-blue-600 border border-gray-100 active:scale-95 transition-transform"><BookOpen className="w-5 h-5" strokeWidth={2} /></button>
+            <button onClick={onOpenSettings} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-600 border border-gray-100 active:scale-95 transition-transform"><Settings className="w-5 h-5" strokeWidth={2} /></button>
         </div>
       </div>
 
@@ -278,10 +238,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
         {/* HERO CARD */}
         <div 
             className="rounded-3xl p-6 shadow-lg text-white relative overflow-hidden transition-colors duration-300"
-            style={{ 
-                backgroundColor: primaryColor,
-                boxShadow: `0 20px 25px -5px ${primaryColor}40`
-            }}
+            style={{ backgroundColor: primaryColor, boxShadow: `0 20px 25px -5px ${primaryColor}40` }}
         >
             <div className="absolute inset-0 bg-gradient-to-br from-white/10 to-black/10 pointer-events-none" />
             <div className="absolute top-0 right-0 w-32 h-32 bg-white opacity-10 rounded-full -mr-10 -mt-10 blur-2xl"></div>
@@ -330,7 +287,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
           </div>
         </div>
 
-        {/* BUDGET CARDS - RIPRISTINATO */}
+        {/* BUDGET CARDS */}
         {budgetProgress.length > 0 && (
           <div>
             <div className="flex items-center justify-between px-1 mb-3">

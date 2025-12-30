@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { ArrowLeft, Plus, Trash2, X, TrendingUp, PieChart, Landmark, Bitcoin, Box, ScrollText, Settings, RefreshCw, PenLine, Loader2, BookOpen, ArrowDown, ArrowUp, History, Info, Wallet, Calculator } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, X, TrendingUp, PieChart, Landmark, Bitcoin, Box, ScrollText, Settings, RefreshCw, PenLine, Loader2, BookOpen, ArrowDown, ArrowUp, History, Info, Wallet, Calculator, ArrowRightLeft } from 'lucide-react'
 import { supabase, type Investment, type Transaction } from '../lib/supabase'
 import { formatCurrency, formatDate, cn } from '../lib/utils'
 
@@ -40,8 +40,9 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
   const [formTicker, setFormTicker] = useState('')
   const [formQuantity, setFormQuantity] = useState('')
   
-  // Logica Switch
-  const [isNewPurchase, setIsNewPurchase] = useState(true) 
+  // Logica Switch (Compra/Vendi/Setup)
+  const [operationMode, setOperationMode] = useState<'buy_new' | 'buy_more' | 'sell' | 'setup'>('buy_new')
+  
   const [formTotalSpent, setFormTotalSpent] = useState('') 
   const [formFees, setFormFees] = useState('') 
   const [formPMC, setFormPMC] = useState('') 
@@ -62,12 +63,22 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
   const round2 = (num: number) => Math.round((num + Number.EPSILON) * 100) / 100
 
   // --- CALCOLI DERIVATI ---
-  const spentVal = parseFloat(formTotalSpent) || 0
+  const moneyVal = parseFloat(formTotalSpent) || 0
+  const feesVal = parseFloat(formFees) || 0
   const qtyVal = parseFloat(formQuantity) || 0
   const pmcVal = parseFloat(formPMC) || 0
 
-  const calculatedPMC = (qtyVal > 0 && spentVal > 0) ? (spentVal / qtyVal) : 0
+  const calculatedPMC = (qtyVal > 0 && moneyVal > 0) ? ((moneyVal - feesVal) / qtyVal) : 0
   const calculatedTotalInvested = pmcVal * qtyVal
+  
+  const sellNetDetails = (() => {
+      if (operationMode !== 'sell' || !selectedInvestment) return { realizedPL: 0, capitalRepaid: 0 }
+      const currentPMC = (selectedInvestment.invested_amount || 0) / (selectedInvestment.quantity || 1)
+      const costBasis = round2(currentPMC * qtyVal) 
+      const netProceeds = round2(moneyVal - feesVal) 
+      const realizedPL = round2(netProceeds - costBasis)
+      return { realizedPL, capitalRepaid: costBasis }
+  })()
 
   useEffect(() => {
     loadInvestments()
@@ -76,10 +87,10 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
   }, [])
 
   useEffect(() => {
-    if (isNewPurchase && calculatedPMC > 0) {
+    if (operationMode === 'buy_new' && calculatedPMC > 0) {
         setFormPMC(calculatedPMC.toFixed(2))
     }
-  }, [calculatedPMC, isNewPurchase])
+  }, [calculatedPMC, operationMode])
 
   async function fetchLiquidity() {
       try {
@@ -116,8 +127,9 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
         if (!user) return
         const { data: profile } = await supabase.from('profiles').select('last_api_call').eq('id', user.id).maybeSingle()
         if (profile?.last_api_call) {
-            const last = new Date(profile.last_api_call)
-            const diffMs = new Date().getTime() - last.getTime()
+            const last = new Date(profile.last_api_call).getTime()
+            const now = new Date().getTime()
+            const diffMs = now - last
             const diffMins = Math.floor(diffMs / 60000)
             if (diffMins < 60) setMinutesRemaining(60 - diffMins)
             else setMinutesRemaining(0)
@@ -126,7 +138,10 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
   }
 
   async function handleUpdatePrices() {
-    if (minutesRemaining > 0) { alert(`Attendi ${minutesRemaining} min.`); return }
+    if (minutesRemaining > 0) { 
+        alert(`Devi aspettare ancora ${minutesRemaining} minuti prima di poter aggiornare i prezzi dei tuoi asset.`); 
+        return 
+    }
     setIsUpdating(true)
     try {
         const { error, data } = await supabase.functions.invoke('update-prices')
@@ -144,15 +159,15 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
     finally { setIsUpdating(false) }
   }
 
-  // --- FUNZIONE HELPER PER CATEGORIA INVESTIMENTI ---
-  async function getOrCreateInvestmentCategory(userId: string): Promise<string> {
+  // --- FUNZIONE HELPER CATEGORIA COMMISSIONI ---
+  async function getOrCreateCommissionCategory(userId: string): Promise<string> {
       // 1. Cerca se esiste già
       const { data: existing } = await supabase
           .from('categories')
           .select('id')
           .eq('user_id', userId)
-          .eq('name', 'Investimenti')
-          .eq('type', 'expense') // Deve essere un'uscita
+          .eq('name', 'Commissioni Investimenti')
+          .eq('type', 'expense')
           .maybeSingle()
       
       if (existing) return existing.id
@@ -162,7 +177,7 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
           .from('categories')
           .insert({
               user_id: userId,
-              name: 'Investimenti',
+              name: 'Commissioni Investimenti',
               type: 'expense',
               budget_limit: null,
               parent_id: null
@@ -185,39 +200,11 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
       const isAutomated = supportsAutomation && !isManual
       
       const qty = round2(parseFloat(formQuantity) || 0)
+      const totalMoney = round2(parseFloat(formTotalSpent) || 0)
       const fees = round2(Math.max(0, parseFloat(formFees) || 0)) 
       
-      let investedAmount = 0
-      let currentTotalVal = 0
       let finalTicker = isAutomated ? formTicker.toUpperCase().trim() : null
-      
-      // Controllo Liquidità
-      if (isNewPurchase && !editingId) {
-          const totalCost = round2((parseFloat(formTotalSpent) || 0) + fees)
-          if (totalCost > 0 && totalCost > currentLiquidity) {
-              throw new Error(`Fondi insufficienti! Hai ${formatCurrency(currentLiquidity)}, ma l'operazione richiede ${formatCurrency(totalCost)}.`)
-          }
-      }
-
-      if (!editingId) {
-          if (isNewPurchase) {
-              investedAmount = round2(parseFloat(formTotalSpent) || 0)
-          } else {
-              investedAmount = round2(calculatedTotalInvested)
-          }
-
-          if (isAutomated && finalTicker) {
-              const { data, error } = await supabase.functions.invoke('update-prices', { body: { symbol: finalTicker } })
-              if (error || data?.error) throw new Error('Ticker non trovato o errore API.')
-              if (data?.price) {
-                  const marketPrice = parseFloat(data.price)
-                  currentTotalVal = round2(marketPrice * qty)
-                  if (!formName && data.name) setFormName(data.name)
-              }
-          } else {
-              currentTotalVal = investedAmount
-          }
-      }
+      let targetInvestmentId = selectedInvestment?.id || editingId
 
       if (editingId) {
           const updateData: any = {
@@ -227,7 +214,6 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
               is_automated: isAutomated,
               updated_at: new Date().toISOString()
           }
-
           if (isAutomated && finalTicker) {
              const { data, error } = await supabase.functions.invoke('update-prices', { body: { symbol: finalTicker } })
              if (!error && !data?.error && data?.price) {
@@ -238,19 +224,33 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
                  }
              }
           }
-
-          const { error } = await supabase.from('investments').update(updateData).eq('id', editingId)
-          if (error) throw error
-
-      } else {
-          // --- NUOVO o COMPRA ANCORA ---
-          let targetInvestmentId = selectedInvestment?.id
+          await supabase.from('investments').update(updateData).eq('id', editingId)
+      } 
+      else if (operationMode === 'buy_new' || operationMode === 'buy_more' || operationMode === 'setup') {
+          
+          const netInvestedAmount = round2(Math.max(0, totalMoney - fees))
+          
+          if (operationMode !== 'setup') {
+              if (totalMoney > 0 && totalMoney > currentLiquidity) {
+                  throw new Error(`Fondi insufficienti! Hai ${formatCurrency(currentLiquidity)}.`)
+              }
+          }
 
           if (!targetInvestmentId) {
-              // NUOVO ASSET
               if (finalTicker) {
                   const { data: existing } = await supabase.from('investments').select('id').eq('user_id', user.id).eq('ticker', finalTicker).maybeSingle()
-                  if (existing) throw new Error('Ticker già presente. Usa "Compra Ancora".')
+                  if (existing) throw new Error('Ticker già presente.')
+              }
+
+              const initialInvested = operationMode === 'setup' ? calculatedTotalInvested : netInvestedAmount
+              
+              let initialCurrentValue = initialInvested
+              if (isAutomated && finalTicker) {
+                  const { data } = await supabase.functions.invoke('update-prices', { body: { symbol: finalTicker } })
+                  if (data?.price) {
+                      initialCurrentValue = round2(parseFloat(data.price) * qty)
+                      if (!formName && data.name) setFormName(data.name)
+                  }
               }
 
               const { data: newAsset, error } = await supabase.from('investments').insert({
@@ -260,61 +260,111 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
                   ticker: finalTicker,
                   is_automated: isAutomated,
                   quantity: qty,
-                  invested_amount: investedAmount,
-                  current_value: currentTotalVal,
+                  invested_amount: initialInvested,
+                  current_value: initialCurrentValue,
                   updated_at: new Date().toISOString()
               }).select().single()
               
               if (error) throw error
               targetInvestmentId = newAsset.id
           } else {
-              // AGGIUNTA QUOTE
               const { data: currentAsset } = await supabase.from('investments').select('*').eq('id', targetInvestmentId).single()
               if (!currentAsset) throw new Error('Asset non trovato')
 
               const newTotalQty = round2((currentAsset.quantity || 0) + qty)
-              const newTotalInvested = round2((currentAsset.invested_amount || 0) + investedAmount)
+              const newTotalInvested = round2((currentAsset.invested_amount || 0) + netInvestedAmount)
               
               let newCurrentVal = 0
               if (currentAsset.quantity && currentAsset.quantity > 0) {
                   const pricePerShare = currentAsset.current_value / currentAsset.quantity
                   newCurrentVal = round2(pricePerShare * newTotalQty)
               } else {
-                  newCurrentVal = investedAmount 
+                  newCurrentVal = netInvestedAmount
               }
 
-              const { error } = await supabase.from('investments').update({
+              await supabase.from('investments').update({
                   quantity: newTotalQty,
                   invested_amount: newTotalInvested,
                   current_value: newCurrentVal,
                   updated_at: new Date().toISOString()
               }).eq('id', targetInvestmentId)
-
-              if (error) throw error
           }
 
-          // --- CREAZIONE TRANSAZIONE DI SPESA ---
-          if (isNewPurchase && targetInvestmentId) {
-              const totalDeduction = round2(investedAmount + fees) 
-              if (totalDeduction > 0) {
-                  
-                  // **FIX QUI**: Ottieni o crea la categoria "Investimenti"
-                  const investmentCatId = await getOrCreateInvestmentCategory(user.id)
-
-                  const { error: txError } = await supabase.from('transactions').insert({
+          if (operationMode !== 'setup' && targetInvestmentId) {
+              if (netInvestedAmount > 0) {
+                  await supabase.from('transactions').insert({
                       user_id: user.id,
-                      amount: -Math.abs(totalDeduction),
-                      type: 'expense',
+                      amount: -Math.abs(netInvestedAmount),
+                      type: 'transfer', 
                       description: `Acquisto: ${formName || finalTicker} (${qty} q.)`,
                       date: new Date().toISOString(),
                       investment_id: targetInvestmentId,
-                      category_id: investmentCatId, // <--- ORA ASSEGNAMO LA CATEGORIA
-                      asset_quantity: qty, 
+                      asset_quantity: qty,
                       is_work_related: false,
                       is_recurring: false
                   })
-                  if (txError) console.error("Errore TX:", txError)
               }
+              if (fees > 0) {
+                  // Ottieni o crea la categoria "Commissioni Investimenti"
+                  const commCatId = await getOrCreateCommissionCategory(user.id)
+
+                  await supabase.from('transactions').insert({
+                      user_id: user.id,
+                      amount: -Math.abs(fees),
+                      type: 'expense', 
+                      category_id: commCatId, // Assegna la categoria
+                      description: `Commissioni: ${formName || finalTicker}`,
+                      date: new Date().toISOString(),
+                      is_work_related: false,
+                      is_recurring: false
+                  })
+              }
+          }
+      } 
+      else if (operationMode === 'sell' && selectedInvestment) {
+          if (qty > selectedInvestment.quantity!) throw new Error('Non hai abbastanza quote.')
+
+          const { realizedPL, capitalRepaid } = sellNetDetails
+          
+          const newQty = round2(selectedInvestment.quantity! - qty)
+          const newInvested = round2(selectedInvestment.invested_amount! - capitalRepaid)
+          
+          let newCurrentVal = 0
+          if (selectedInvestment.quantity! > 0) {
+              const pricePerShare = selectedInvestment.current_value / selectedInvestment.quantity!
+              newCurrentVal = round2(pricePerShare * newQty)
+          }
+
+          await supabase.from('investments').update({
+              quantity: newQty,
+              invested_amount: Math.max(0, newInvested),
+              current_value: newCurrentVal,
+              updated_at: new Date().toISOString()
+          }).eq('id', selectedInvestment.id)
+
+          if (capitalRepaid > 0) {
+              await supabase.from('transactions').insert({
+                  user_id: user.id,
+                  amount: capitalRepaid,
+                  type: 'transfer',
+                  description: `Vendita: ${selectedInvestment.name} (Capitale)`,
+                  date: new Date().toISOString(),
+                  investment_id: selectedInvestment.id,
+                  asset_quantity: -qty, 
+                  is_work_related: false
+              })
+          }
+
+          if (Math.abs(realizedPL) > 0.01) {
+              await supabase.from('transactions').insert({
+                  user_id: user.id,
+                  amount: realizedPL, 
+                  type: realizedPL > 0 ? 'income' : 'expense',
+                  description: `Trading P&L: ${selectedInvestment.name}`,
+                  date: new Date().toISOString(),
+                  investment_id: selectedInvestment.id, 
+                  is_work_related: false
+              })
           }
       }
 
@@ -332,21 +382,26 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
   }
 
   async function handleDeleteTransaction(tx: Transaction) {
-      if (!confirm('Annullare questa transazione? Verranno rimossi i fondi e le quote dall\'asset.')) return
+      if (!confirm('Annullare questa transazione?')) return
       if (!selectedInvestment) return
 
       try {
-          const qtyToRemove = (tx as any).asset_quantity || 0
-          const amountToRemove = Math.abs(tx.amount)
-
+          const qtyChange = (tx as any).asset_quantity || 0 
+          
           const currentQty = selectedInvestment.quantity || 0
           const currentInvested = selectedInvestment.invested_amount || 0
 
-          const newQty = round2(currentQty - qtyToRemove)
-          const newInvested = round2(currentInvested - amountToRemove)
+          const newQty = round2(currentQty - qtyChange) 
           
+          let deltaInvested = 0
+          if (tx.type === 'transfer') {
+              deltaInvested = tx.amount 
+          }
+          
+          const newInvested = round2(currentInvested + deltaInvested)
+
           let newCurrentValue = 0
-          if (currentQty > 0) {
+          if (currentQty > 0) { 
              const pricePerShare = selectedInvestment.current_value / currentQty
              newCurrentValue = round2(pricePerShare * newQty)
           }
@@ -386,14 +441,15 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
       setIsDetailOpen(true)
   }
 
-  function handleOpenBuyForm() {
+  function handleOpenBuyForm(mode: 'buy_more' | 'sell') {
       resetForm()
       if (selectedInvestment) {
           setFormType(selectedInvestment.type)
           setFormName(selectedInvestment.name || '')
           setFormTicker(selectedInvestment.ticker || '')
           setIsManual(!selectedInvestment.is_automated)
-          setIsNewPurchase(true)
+          
+          setOperationMode(mode) 
       }
       setIsDetailOpen(false)
       setIsFormOpen(true)
@@ -410,7 +466,7 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
       setFormQuantity('')
       setFormTotalSpent('')
       setFormFees('')
-      setIsNewPurchase(false)
+      setOperationMode('setup')
       setIsFormOpen(true)
   }
 
@@ -423,7 +479,7 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
     setFormPMC('')
     setFormTotalSpent('')
     setFormFees('')
-    setIsNewPurchase(true)
+    setOperationMode('buy_new')
   }
 
   const totalAssets = investments.reduce((sum, item) => sum + (item.current_value || 0), 0)
@@ -433,6 +489,7 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
 
   return (
     <div className="min-h-screen bg-gray-50 pb-24">
+      {/* HEADER */}
       <div className="bg-white sticky top-0 z-20 border-b border-gray-100 shadow-sm">
         <div className="max-w-md mx-auto px-4 py-4 flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -440,7 +497,10 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
                 <h1 className="text-xl font-bold text-gray-900">Investimenti</h1>
             </div>
             <div className="flex gap-2">
-                <button onClick={handleUpdatePrices} disabled={minutesRemaining > 0 || isUpdating} className={cn("p-2 rounded-full transition-all flex items-center gap-2 border", minutesRemaining > 0 ? "bg-gray-100 text-gray-400 border-gray-100" : "bg-blue-50 text-blue-600 border-blue-100 active:scale-95")}>
+                <button 
+                    onClick={handleUpdatePrices} 
+                    className={cn("p-2 rounded-full transition-all flex items-center gap-2 border", minutesRemaining > 0 ? "bg-gray-100 text-gray-400 border-gray-100" : "bg-blue-50 text-blue-600 border-blue-100 active:scale-95")}
+                >
                     <RefreshCw className={cn("w-5 h-5", isUpdating && "animate-spin")} strokeWidth={2} />
                 </button>
                 <button onClick={onOpenGuide} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-blue-600 border border-gray-100 active:scale-95 transition-transform"><BookOpen className="w-5 h-5" strokeWidth={2} /></button>
@@ -450,6 +510,8 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
       </div>
 
       <div className="max-w-md mx-auto px-4 py-6 space-y-8">
+        
+        {/* TOTAL CARD */}
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex flex-col items-center justify-center text-center relative overflow-hidden">
             <div className="absolute top-0 left-0 w-full h-1.5" style={{ backgroundColor: primaryColor }}></div>
             <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">Patrimonio Corrente</p>
@@ -460,6 +522,7 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
             </div>
         </div>
 
+        {/* LISTA ASSET */}
         <div className="space-y-8">
             {loading ? <div className="space-y-4 animate-pulse"><div className="h-32 bg-gray-200 rounded-2xl"/></div> : investments.length === 0 ? <div className="text-center py-10 text-gray-400">Nessun investimento</div> : (
                 categoriesConfig.map((cat) => {
@@ -522,7 +585,7 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
             )}
         </div>
 
-        <button onClick={() => { setSelectedInvestment(null); resetForm(); setIsFormOpen(true) }} className="w-full py-4 text-white rounded-xl font-bold shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2 sticky bottom-6 z-10" style={{ backgroundColor: primaryColor, boxShadow: `0 10px 20px -5px ${primaryColor}40` }}>
+        <button onClick={() => { setSelectedInvestment(null); resetForm(); setOperationMode('buy_new'); setIsFormOpen(true) }} className="w-full py-4 text-white rounded-xl font-bold shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2 sticky bottom-6 z-10" style={{ backgroundColor: primaryColor, boxShadow: `0 10px 20px -5px ${primaryColor}40` }}>
           <Plus className="w-5 h-5" /> Aggiungi Asset
         </button>
       </div>
@@ -574,14 +637,19 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
                            {investmentHistory.length === 0 ? <p className="text-xs text-gray-400 italic">Nessun acquisto recente registrato.</p> : 
                                investmentHistory.map(tx => (
                                    <div key={tx.id} className="flex justify-between items-center py-3 border-b border-gray-50 last:border-0 group">
-                                       <div>
-                                           <p className="text-xs font-bold text-gray-900">{formatDate(tx.date)}</p>
-                                           <p className="text-[10px] text-gray-400">{tx.description}</p>
+                                       <div className="flex items-center gap-3">
+                                           <div className={cn("p-1.5 rounded-lg shrink-0", tx.type === 'income' ? "bg-emerald-50 text-emerald-600" : tx.type === 'transfer' && tx.amount > 0 ? "bg-blue-50 text-blue-600" : "bg-rose-50 text-rose-600")}>
+                                               {tx.type === 'income' ? <ArrowUp className="w-4 h-4"/> : tx.type === 'transfer' && tx.amount > 0 ? <ArrowRightLeft className="w-4 h-4"/> : <ArrowDown className="w-4 h-4"/>}
+                                           </div>
+                                           <div>
+                                               <p className="text-xs font-bold text-gray-900">{formatDate(tx.date)}</p>
+                                               <p className="text-[10px] text-gray-400">{tx.description}</p>
+                                           </div>
                                        </div>
                                        <div className="flex items-center gap-3">
                                             <div className="text-right">
-                                                <p className="text-sm font-bold text-rose-600">{formatCurrency(tx.amount)}</p>
-                                                {(tx as any).asset_quantity && <p className="text-[10px] text-gray-500 font-medium">+{(tx as any).asset_quantity} quote</p>}
+                                                <p className={cn("text-sm font-bold", tx.amount > 0 ? "text-emerald-600" : "text-rose-600")}>{formatCurrency(tx.amount)}</p>
+                                                {(tx as any).asset_quantity && <p className="text-[10px] text-gray-500 font-medium">{(tx as any).asset_quantity > 0 ? '+' : ''}{(tx as any).asset_quantity} quote</p>}
                                             </div>
                                             <button onClick={() => handleDeleteTransaction(tx)} className="p-1.5 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded transition-colors"><Trash2 className="w-4 h-4" /></button>
                                        </div>
@@ -594,13 +662,16 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
 
                <div className="p-4 border-t border-gray-100 bg-gray-50/50 flex gap-3">
                    <button onClick={() => handleManualEdit(selectedInvestment)} className="flex-1 py-3 bg-white border border-gray-200 text-gray-600 rounded-xl font-bold text-sm hover:bg-gray-50">
-                       <PenLine className="w-4 h-4 inline mr-2"/> Modifica Dati
+                       <PenLine className="w-4 h-4 inline mr-2"/> Modifica
                    </button>
                    <button onClick={() => handleDeleteAsset(selectedInvestment.id)} className="p-3 bg-white border border-red-100 text-red-500 rounded-xl hover:bg-red-50">
                        <Trash2 className="w-5 h-5"/>
                    </button>
-                   <button onClick={handleOpenBuyForm} className="flex-[2] py-3 bg-blue-600 text-white rounded-xl font-bold text-sm hover:bg-blue-700 shadow-md shadow-blue-200 flex items-center justify-center gap-2">
-                       <Plus className="w-4 h-4"/> Compra Ancora
+                   <button onClick={() => handleOpenBuyForm('sell')} className="flex-1 py-3 bg-white border border-gray-200 text-gray-900 rounded-xl font-bold text-sm hover:bg-gray-50 flex items-center justify-center gap-2">
+                       <ArrowRightLeft className="w-4 h-4"/> Vendi
+                   </button>
+                   <button onClick={() => handleOpenBuyForm('buy_more')} className="flex-[2] py-3 bg-blue-600 text-white rounded-xl font-bold text-sm hover:bg-blue-700 shadow-md shadow-blue-200 flex items-center justify-center gap-2">
+                       <Plus className="w-4 h-4"/> Compra
                    </button>
                </div>
             </div>
@@ -611,12 +682,22 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
         <div className="fixed inset-0 bg-black/60 z-[100] flex items-end sm:items-center justify-center sm:p-4 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="bg-white w-full max-w-md rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
             <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
-              <h2 className="text-lg font-bold text-gray-900">{editingId ? 'Modifica Asset' : (selectedInvestment ? 'Aggiungi Quote' : 'Nuovo Asset')}</h2>
+              <h2 className="text-lg font-bold text-gray-900">
+                  {editingId ? 'Modifica Asset' : (operationMode === 'sell' ? 'Vendi Asset' : operationMode === 'buy_more' ? 'Aggiungi Quote' : 'Nuovo Asset')}
+              </h2>
               <button onClick={() => setIsFormOpen(false)} className="p-2 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors"><X className="w-5 h-5 text-gray-500" /></button>
             </div>
 
             <form onSubmit={handleSaveAsset} className="p-6 pb-24 overflow-y-auto space-y-5">
               
+              {(!selectedInvestment && !editingId) && (
+                  <div className="flex bg-gray-100 p-1 rounded-xl mb-4">
+                      <button type="button" onClick={() => setOperationMode('buy_new')} className={cn("flex-1 py-2 rounded-lg text-xs font-bold transition-all", operationMode === 'buy_new' ? "bg-white shadow-sm text-gray-900" : "text-gray-500")}>Nuovo Acquisto</button>
+                      <button type="button" onClick={() => setOperationMode('setup')} className={cn("flex-1 py-2 rounded-lg text-xs font-bold transition-all", operationMode === 'setup' ? "bg-white shadow-sm text-gray-900" : "text-gray-500")}>Già in Portafoglio</button>
+                  </div>
+              )}
+
+              {/* TIPO ASSET */}
               {(!selectedInvestment || editingId) && (
                   <div>
                       <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1.5">Tipologia</label>
@@ -628,8 +709,9 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
                   </div>
               )}
 
+              {/* AUTOMAZIONE SWITCH */}
               {((!selectedInvestment && !editingId) || editingId) && supportsAutomation && (
-                  <div className="flex items-center justify-between bg-blue-50/50 p-3 rounded-xl border border-blue-100">
+                  <div className="flex items-center justify-between bg-blue-50/50 p-3 rounded-xl border border-blue-100 mb-4">
                       <div className="flex items-center gap-2">
                           <RefreshCw className="w-4 h-4 text-blue-600" />
                           <div><p className="text-xs font-bold text-gray-900">Tracciamento Prezzo</p><p className="text-[10px] text-gray-500">Aggiorna il valore in automatico</p></div>
@@ -641,91 +723,95 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
                   </div>
               )}
 
-              <div className="space-y-4">
-                  {(!selectedInvestment || editingId) && (
-                      <>
+              {/* NOME E TICKER */}
+              {(!selectedInvestment || editingId) && (
+                  <div className="space-y-4">
+                    <div>
+                        <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Nome Asset</label>
+                        <input type="text" value={formName} onChange={e => setFormName(e.target.value)} placeholder="Es. Vanguard All-World" className="w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900 text-sm" />
+                    </div>
+
+                    {supportsAutomation && !isManual && (
                         <div>
-                            <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Nome Asset</label>
-                            <input type="text" value={formName} onChange={e => setFormName(e.target.value)} placeholder="Es. Vanguard All-World" className="w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900 text-sm" />
+                            <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Ticker (Yahoo Finance)</label>
+                            <input type="text" value={formTicker} onChange={e => setFormTicker(e.target.value.toUpperCase())} placeholder="Es. VWCE.MI" className="w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-mono font-bold text-gray-900 uppercase tracking-wider" required />
+                            {!editingId && (
+                                <p className="text-[10px] text-blue-500 mt-1 flex items-center gap-1">
+                                    <Info className="w-3 h-3"/> Se il ticker esiste già, l'acquisto sarà aggiunto alla posizione esistente.
+                                </p>
+                            )}
                         </div>
+                    )}
+                  </div>
+              )}
 
-                        {supportsAutomation && !isManual && (
-                            <div className="col-span-2">
-                                <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Ticker (Yahoo Finance)</label>
-                                <div className="relative">
-                                    <input type="text" value={formTicker} onChange={e => setFormTicker(e.target.value.toUpperCase())} placeholder="Es. VWCE.MI" className="w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-mono font-bold text-gray-900 uppercase tracking-wider" required />
-                                </div>
-                                {!editingId && (
-                                    <p className="text-[10px] text-blue-500 mt-1 flex items-center gap-1">
-                                        <Info className="w-3 h-3"/> Se il ticker esiste già, l'acquisto sarà aggiunto alla posizione esistente.
-                                    </p>
-                                )}
-                            </div>
-                        )}
-                      </>
-                  )}
+              {/* CAMPI QUANTITÀ E IMPORTI */}
+              {!editingId && (
+                  <div className="pt-2 space-y-4">
+                      <div>
+                        <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Quantità {operationMode === 'sell' ? 'da Vendere' : '(Quote)'}</label>
+                        <input type="number" step="any" min="0" value={formQuantity} onChange={e => setFormQuantity(e.target.value)} placeholder="Es. 10.5" className="w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900" required />
+                      </div>
 
-                  {!editingId && (
-                      <>
-                          {!selectedInvestment && (
-                              <div className="flex bg-gray-100 p-1 rounded-xl mt-4">
-                                  <button type="button" onClick={() => setIsNewPurchase(true)} className={cn("flex-1 py-2 rounded-lg text-xs font-bold transition-all", isNewPurchase ? "bg-white shadow-sm text-gray-900" : "text-gray-500")}>Nuovo Acquisto</button>
-                                  <button type="button" onClick={() => setIsNewPurchase(false)} className={cn("flex-1 py-2 rounded-lg text-xs font-bold transition-all", !isNewPurchase ? "bg-white shadow-sm text-gray-900" : "text-gray-500")}>Già in Portafoglio</button>
-                              </div>
-                          )}
-
-                          <div className="pt-2 space-y-4">
+                      {operationMode !== 'setup' ? (
+                          <div className="animate-in fade-in space-y-4">
                               <div>
-                                <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Quantità (Quote)</label>
-                                <input type="number" step="any" min="0" value={formQuantity} onChange={e => setFormQuantity(e.target.value)} placeholder="Es. 10.5" className="w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900" required />
+                                <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">
+                                    {operationMode === 'sell' ? 'Totale Incassato (€)' : 'Totale Pagato (€)'}
+                                </label>
+                                <div className="relative">
+                                    <input type="number" step="any" min="0" value={formTotalSpent} onChange={e => setFormTotalSpent(e.target.value)} placeholder="0.00" className="w-full p-4 pl-10 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-bold text-gray-900 text-lg" required />
+                                    <Wallet className="w-4 h-4 text-gray-400 absolute left-4 top-1/2 -translate-y-1/2" />
+                                </div>
+                                <p className="text-[10px] text-gray-400 mt-1 ml-1">
+                                    {operationMode === 'sell' ? 'Include il capitale restituito e il profitto/perdita.' : 'Verrà scalato dalla liquidità.'}
+                                </p>
                               </div>
-
-                              {isNewPurchase ? (
-                                  <div className="grid grid-cols-2 gap-4 animate-in fade-in">
-                                      <div className="col-span-2">
-                                        <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Totale Pagato (€)</label>
-                                        <div className="relative">
-                                            <input type="number" step="any" min="0" value={formTotalSpent} onChange={e => setFormTotalSpent(e.target.value)} placeholder="Quanto hai speso?" className="w-full p-4 pl-10 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-bold text-gray-900 text-lg" required />
-                                            <Wallet className="w-4 h-4 text-gray-400 absolute left-4 top-1/2 -translate-y-1/2" />
-                                        </div>
-                                        <p className="text-[10px] text-orange-500 mt-1 ml-1 font-medium">Verrà scalato dalla liquidità.</p>
-                                      </div>
-                                      <div>
-                                        <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Commissioni (€)</label>
-                                        <input type="number" step="any" min="0" value={formFees} onChange={e => setFormFees(e.target.value)} placeholder="0.00" className="w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900" />
-                                      </div>
-                                      <div className="flex items-end pb-4">
-                                        <div className="bg-gray-50 p-2 rounded-lg w-full">
-                                            <p className="text-[10px] text-gray-400 uppercase font-bold">Prezzo di Carico Calc.</p>
-                                            <p className="text-sm font-bold text-gray-900">{formatCurrency(calculatedPMC)} / q</p>
-                                        </div>
-                                      </div>
-                                  </div>
-                              ) : (
-                                  <div className="animate-in fade-in space-y-4">
-                                      <div>
-                                          <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Prezzo Medio di Carico (PMC)</label>
-                                          <div className="relative">
-                                              <input type="number" step="any" min="0" value={formPMC} onChange={e => setFormPMC(e.target.value)} placeholder="Prezzo medio acquisto" className="w-full p-4 pl-10 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900" required />
-                                              <Calculator className="w-4 h-4 text-gray-400 absolute left-4 top-1/2 -translate-y-1/2" />
-                                          </div>
-                                          <p className="text-[10px] text-gray-400 mt-1 ml-1">Serve solo per lo storico. Non tocca la liquidità.</p>
-                                      </div>
-                                      
-                                      <div className="bg-blue-50 p-3 rounded-xl border border-blue-100 flex justify-between items-center">
-                                            <span className="text-xs font-bold text-blue-600">Totale Investito Storico</span>
-                                            <span className="font-bold text-lg text-blue-700">{formatCurrency(calculatedTotalInvested)}</span>
-                                      </div>
-                                  </div>
-                              )}
+                              <div>
+                                <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Commissioni (€)</label>
+                                <input type="number" step="any" min="0" value={formFees} onChange={e => setFormFees(e.target.value)} placeholder="0.00" className="w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900" />
+                              </div>
+                              
+                              <div className="bg-gray-50 p-3 rounded-xl border border-gray-100">
+                                {operationMode === 'sell' ? (
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-xs font-bold text-gray-500">P&L Realizzato</span>
+                                        <span className={cn("font-bold text-sm", sellNetDetails.realizedPL >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                                            {formatCurrency(sellNetDetails.realizedPL)}
+                                        </span>
+                                    </div>
+                                ) : (
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-xs font-bold text-gray-500">Prezzo Carico Calc.</span>
+                                        <span className="font-bold text-sm text-gray-900">
+                                            {formatCurrency(calculatedPMC)} / q
+                                        </span>
+                                    </div>
+                                )}
+                              </div>
                           </div>
-                      </>
-                  )}
-              </div>
+                      ) : (
+                          <div className="animate-in fade-in space-y-4">
+                              <div>
+                                  <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Prezzo Medio di Carico (PMC)</label>
+                                  <div className="relative">
+                                      <input type="number" step="any" min="0" value={formPMC} onChange={e => setFormPMC(e.target.value)} placeholder="Prezzo medio acquisto" className="w-full p-4 pl-10 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900" required />
+                                      <Calculator className="w-4 h-4 text-gray-400 absolute left-4 top-1/2 -translate-y-1/2" />
+                                  </div>
+                              </div>
+                              <div className="bg-blue-50 p-3 rounded-xl border border-blue-100 flex justify-between items-center">
+                                    <span className="text-xs font-bold text-blue-600">Totale Investito Storico</span>
+                                    <span className="font-bold text-lg text-blue-700">{formatCurrency(calculatedTotalInvested)}</span>
+                              </div>
+                          </div>
+                      )}
+                  </div>
+              )}
 
               <div className="pt-4 mt-auto">
                 <button type="submit" disabled={formLoading} className="w-full py-4 text-white font-bold rounded-2xl shadow-xl hover:opacity-90 active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-2" style={{ backgroundColor: primaryColor, boxShadow: `0 10px 20px -5px ${primaryColor}40` }}>
-                  {formLoading ? <><Loader2 className="w-5 h-5 animate-spin" /> Salvataggio...</> : (editingId ? 'Salva Modifiche' : (selectedInvestment ? 'Aggiungi al Portafoglio' : 'Crea Asset'))}
+                  {formLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : null}
+                  {editingId ? 'Salva Modifiche' : operationMode === 'sell' ? 'Conferma Vendita' : 'Salva Transazione'}
                 </button>
               </div>
             </form>

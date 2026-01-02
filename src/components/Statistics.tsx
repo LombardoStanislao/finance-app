@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react'
-import { ArrowLeft, TrendingUp, BarChart3, Wallet, TrendingDown, Settings, CandlestickChart } from 'lucide-react'
-import { PieChart, Pie, Cell, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts'
-import { supabase, type Category } from '../lib/supabase'
-import { formatCurrency, cn } from '../lib/utils'
+import { useState, useEffect, useMemo } from 'react'
+import { ArrowLeft, TrendingUp, Wallet, Settings, CandlestickChart, Filter, X, Activity, Banknote, CheckCircle2, ChevronDown, Calendar, PiggyBank, Flame } from 'lucide-react'
+import { PieChart, Pie, Cell, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, BarChart, Bar } from 'recharts'
+import { supabase, type Category, type Transaction } from '../lib/supabase'
+import { formatCurrency, cn, formatDate } from '../lib/utils'
 
 interface StatisticsProps {
   onBack: () => void
@@ -10,18 +10,22 @@ interface StatisticsProps {
   primaryColor: string
 }
 
+// --- INTERFACCE DATI ---
 interface CategoryData {
+  id: string
   name: string
   value: number
   color: string
-  [key: string]: string | number
+  transactions: Transaction[]
+  subCategories: Map<string, number>
+  [key: string]: any
 }
 
 interface InvestmentDistribution {
   name: string
   value: number
   color: string
-  [key: string]: string | number
+  [key: string]: any
 }
 
 interface NetWorthDataPoint {
@@ -29,9 +33,10 @@ interface NetWorthDataPoint {
   netWorth: number
   income: number
   expenses: number
+  [key: string]: any
 }
 
-const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16']
+const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16', '#6366f1', '#14b8a6']
 
 const INVESTMENT_COLORS: Record<string, string> = {
   'ETF': '#10b981',
@@ -42,28 +47,39 @@ const INVESTMENT_COLORS: Record<string, string> = {
   'Altro': '#6b7280'
 }
 
+// Custom Tooltip per i grafici
+const CustomTooltip = ({ active, payload, label, formatter }: any) => {
+    if (active && payload && payload.length) {
+      return (
+        <div className="bg-white p-3 rounded-2xl shadow-xl border border-gray-100 text-xs">
+          <p className="font-bold text-gray-400 mb-1 uppercase tracking-wide">{label}</p>
+          {payload.map((entry: any, index: number) => (
+            <div key={index} className="flex items-center gap-2 mb-0.5">
+                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color || entry.fill }} />
+                <span className="text-gray-600 font-medium">{entry.name}:</span>
+                <span className="text-gray-900 font-bold">
+                    {formatter ? formatter(entry.value) : formatCurrency(entry.value)}
+                </span>
+            </div>
+          ))}
+        </div>
+      );
+    }
+    return null;
+};
+
+// Label personalizzata per le torte
 const renderCustomizedLabel = (props: any) => {
   const { cx, cy, midAngle, outerRadius, percent } = props
-  const RADIAN = Math.PI / 180
-  const radius = outerRadius * 1.35
-  const x = cx + radius * Math.cos(-midAngle * RADIAN)
-  const y = cy + radius * Math.sin(-midAngle * RADIAN)
+  const radius = outerRadius * 1.4
+  const x = cx + radius * Math.cos(-midAngle * (Math.PI / 180))
+  const y = cy + radius * Math.sin(-midAngle * (Math.PI / 180))
 
-  if (percent < 0.005) return null
-
-  const percentageValue = (percent * 100).toFixed(0)
-  const labelText = percentageValue === '0' ? '<1%' : `${percentageValue}%`
+  if (percent < 0.001) return null
 
   return (
-    <text 
-      x={x} 
-      y={y} 
-      fill="#6b7280" 
-      textAnchor={x > cx ? 'start' : 'end'} 
-      dominantBaseline="central" 
-      className="text-[10px] font-bold"
-    >
-      {labelText}
+    <text x={x} y={y} fill="#9ca3af" textAnchor={x > cx ? 'start' : 'end'} dominantBaseline="central" className="text-[10px] font-bold">
+      {(percent * 100).toFixed(1)}%
     </text>
   )
 }
@@ -71,14 +87,17 @@ const renderCustomizedLabel = (props: any) => {
 export default function Statistics({ onBack, onOpenSettings, primaryColor }: StatisticsProps) {
   const [loading, setLoading] = useState(true)
   
-  const [expensesByCategory, setExpensesByCategory] = useState<CategoryData[]>([])
-  const [incomeByCategory, setIncomeByCategory] = useState<CategoryData[]>([])
+  // Dati Grezzi
+  const [allTransactions, setAllTransactions] = useState<Transaction[]>([])
+  const [allCategories, setAllCategories] = useState<Category[]>([])
   const [investmentData, setInvestmentData] = useState<InvestmentDistribution[]>([])
   const [netWorthData, setNetWorthData] = useState<NetWorthDataPoint[]>([])
   
-  // NUOVO: Stato per il Profitto/Perdita Trading
-  const [tradingPL, setTradingPL] = useState<number>(0)
-  
+  // Dati P.IVA
+  const [isUserPro, setIsUserPro] = useState(false)
+  const [taxBucketIds, setTaxBucketIds] = useState<string[]>([])
+
+  // Stati Filtri
   const [pieRange, setPieRange] = useState<'MONTH' | '6M' | 'YEAR' | 'CUSTOM'>('MONTH')
   const [selectedMonth, setSelectedMonth] = useState<number>(new Date().getMonth() + 1)
   const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear())
@@ -91,29 +110,45 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
   )
   
   const [lineRange, setLineRange] = useState<'1M' | '3M' | '6M' | 'YTD' | 'ALL'>('3M')
-  const [allCategories, setAllCategories] = useState<Category[]>([])
 
+  // Stati Nuove Funzionalità
+  const [isFilterPanelOpen, setIsFilterPanelOpen] = useState(false)
+  const [excludedCategoryIds, setExcludedCategoryIds] = useState<string[]>([]) 
+  const [showNetIncome, setShowNetIncome] = useState(false) 
+  const [activeDrillCategory, setActiveDrillCategory] = useState<CategoryData | null>(null) 
+
+  // Init
   useEffect(() => {
-    loadAllCategories()
+    loadInitialData()
     loadInvestmentData()
   }, [])
 
+  // Reload Transazioni
   useEffect(() => {
     if (allCategories.length > 0) {
-      loadTransactionData()
+      loadTransactionsInRange()
     }
   }, [pieRange, selectedMonth, selectedYear, customStart, customEnd, allCategories])
 
+  // Reload Net Worth
   useEffect(() => {
     loadNetWorthData()
   }, [lineRange])
 
-  async function loadAllCategories() {
+  async function loadInitialData() {
     try {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
-      const { data } = await supabase.from('categories').select('*').eq('user_id', user.id)
-      setAllCategories(data || [])
+
+      const { data: profile } = await supabase.from('profiles').select('is_pro_tax').eq('id', user.id).maybeSingle()
+      setIsUserPro(profile?.is_pro_tax || false)
+
+      const { data: cats } = await supabase.from('categories').select('*').eq('user_id', user.id).order('name')
+      setAllCategories(cats || [])
+
+      const { data: buckets } = await supabase.from('buckets').select('id, name').eq('user_id', user.id).in('name', ['Aliquota INPS', 'Aliquota Imposta Sostitutiva'])
+      if (buckets) setTaxBucketIds(buckets.map(b => b.id))
+
     } catch (error) { console.error(error) }
   }
 
@@ -141,17 +176,7 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
     } catch (error) { console.error(error) }
   }
 
-  function findRootCategory(categoryId: string): Category | undefined {
-      let current = allCategories.find(c => c.id === categoryId)
-      while (current && current.parent_id) {
-          const parent = allCategories.find(c => c.id === current?.parent_id)
-          if (!parent) break 
-          current = parent
-      }
-      return current
-  }
-
-  async function loadTransactionData() {
+  async function loadTransactionsInRange() {
     try {
       setLoading(true)
       const { data: { user } } = await supabase.auth.getUser()
@@ -171,66 +196,22 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
         startDate = new Date(selectedYear, 0, 1).toISOString()
         endDate = new Date(selectedYear, 11, 31, 23, 59, 59).toISOString()
       } else {
-        if (!customStart || !customEnd) {
-            setLoading(false)
-            return
-        }
+        if (!customStart || !customEnd) { setLoading(false); return }
         startDate = new Date(customStart).toISOString()
         endDate = new Date(customEnd + 'T23:59:59').toISOString()
       }
 
-      const { data: transactions, error } = await supabase
+      const { data, error } = await supabase
         .from('transactions')
-        .select('amount, category_id, type, investment_id')
+        .select('*')
         .eq('user_id', user.id)
         .gte('date', startDate)
         .lte('date', endDate)
+        .order('date', { ascending: false })
 
       if (error) throw error
-
-      const expenseMap = new Map<string, number>()
-      const incomeMap = new Map<string, number>()
-      let totalTradingPL = 0 // Variabile per accumulare P&L
-
-      transactions?.forEach((transaction) => {
-        // Logica P&L Trading:
-        // Se ha un investment_id E non è un transfer (quindi è income o expense), è profitto/perdita realizzato.
-        if (transaction.investment_id && transaction.type !== 'transfer') {
-            const val = Number(transaction.amount) // Income è pos, Expense è neg
-            totalTradingPL += val
-        }
-
-        // Logica Categorie Standard (Escludiamo trading)
-        const isTradingPL = transaction.investment_id !== null && transaction.type !== 'transfer'
-        
-        if (transaction.category_id && !isTradingPL) {
-          const val = Math.abs(transaction.amount)
-          const rootCat = findRootCategory(transaction.category_id)
-          const targetId = rootCat ? rootCat.id : transaction.category_id
-
-          if (transaction.type === 'expense') {
-            expenseMap.set(targetId, (expenseMap.get(targetId) || 0) + val)
-          } else if (transaction.type === 'income') {
-            incomeMap.set(targetId, (incomeMap.get(targetId) || 0) + val)
-          }
-        }
-      })
-
-      setTradingPL(totalTradingPL)
-
-      const formatData = (map: Map<string, number>) => {
-        return Array.from(map.entries()).map(([categoryId, value], index) => {
-          const category = allCategories.find(c => c.id === categoryId)
-          return {
-            name: category?.name || 'Sconosciuta',
-            value: value,
-            color: COLORS[index % COLORS.length]
-          }
-        }).sort((a, b) => b.value - a.value)
-      }
-
-      setExpensesByCategory(formatData(expenseMap))
-      setIncomeByCategory(formatData(incomeMap))
+      setAllTransactions(data || [])
+      setActiveDrillCategory(null)
 
     } catch (error) {
       console.error('Error loading transaction data:', error)
@@ -308,377 +289,523 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
     } catch (error) { console.error(error) }
   }
 
-  const months = Array.from({ length: 12 }, (_, i) => i + 1)
-  const currentYear = new Date().getFullYear()
-  const years = Array.from({ length: 5 }, (_, i) => currentYear - 2 + i)
+  const { processedIncome, processedExpenses, kpi, cashFlowData, tradingPL } = useMemo(() => {
+      
+      const visibleTransactions = allTransactions.filter(t => {
+          if (!t.category_id) return true
+          let cat = allCategories.find(c => c.id === t.category_id)
+          while(cat && cat.parent_id) {
+              const parent = allCategories.find(c => c.id === cat?.parent_id)
+              if(parent) cat = parent
+              else break
+          }
+          return cat ? !excludedCategoryIds.includes(cat.id) : true
+      })
 
-  const totalIncome = incomeByCategory.reduce((sum, item) => sum + item.value, 0)
-  const totalExpense = expensesByCategory.reduce((sum, item) => sum + item.value, 0)
+      const incMap = new Map<string, CategoryData>()
+      const expMap = new Map<string, CategoryData>()
+      const cfMap = new Map<string, { inc: number, exp: number, tax: number }>()
+      
+      let totalIncome = 0
+      let totalExpense = 0
+      let totalTaxTransfers = 0
+      let totalTradingPL = 0
+
+      visibleTransactions.forEach(t => {
+          const amount = Number(t.amount)
+          const absAmount = Math.abs(amount)
+          const dateKey = t.date.substring(0, 7) 
+
+          if (!cfMap.has(dateKey)) cfMap.set(dateKey, { inc: 0, exp: 0, tax: 0 })
+          const cfEntry = cfMap.get(dateKey)!
+
+          if (t.investment_id && t.type !== 'transfer') {
+              totalTradingPL += amount
+              return
+          }
+
+          if (t.type === 'transfer' && t.bucket_id && taxBucketIds.includes(t.bucket_id)) {
+              totalTaxTransfers += absAmount
+              cfEntry.tax += absAmount
+              return
+          }
+
+          if (t.category_id && !t.investment_id) {
+              let root = allCategories.find(c => c.id === t.category_id)
+              let subName = null
+              
+              if (root && root.parent_id) {
+                  subName = root.name
+                  const parent = allCategories.find(c => c.id === root?.parent_id)
+                  if (parent) root = parent
+              }
+              
+              const rootId = root?.id || 'unknown'
+              const rootName = root?.name || 'Altro'
+
+              if (t.type === 'expense') {
+                  totalExpense += absAmount
+                  cfEntry.exp += absAmount
+                  
+                  if (!expMap.has(rootId)) expMap.set(rootId, { id: rootId, name: rootName, value: 0, color: '', transactions: [], subCategories: new Map() })
+                  const entry = expMap.get(rootId)!
+                  entry.value += absAmount
+                  entry.transactions.push(t)
+                  if (subName) entry.subCategories.set(subName, (entry.subCategories.get(subName) || 0) + absAmount)
+
+              } else if (t.type === 'income') {
+                  totalIncome += absAmount
+                  cfEntry.inc += absAmount
+
+                  if (!incMap.has(rootId)) incMap.set(rootId, { id: rootId, name: rootName, value: 0, color: '', transactions: [], subCategories: new Map() })
+                  const entry = incMap.get(rootId)!
+                  entry.value += absAmount
+                  entry.transactions.push(t)
+                  if (subName) entry.subCategories.set(subName, (entry.subCategories.get(subName) || 0) + absAmount)
+              }
+          }
+      })
+
+      const finalizeMap = (map: Map<string, CategoryData>) => Array.from(map.values())
+          .sort((a,b) => b.value - a.value)
+          .map((item, idx) => ({ ...item, color: COLORS[idx % COLORS.length] }))
+
+      const cashFlow = Array.from(cfMap.entries())
+          .sort((a,b) => a[0].localeCompare(b[0]))
+          .map(([d, v]) => ({
+              date: new Date(d + '-01').toLocaleDateString('it-IT', { month: 'short' }),
+              income: v.inc,
+              netIncome: Math.max(0, v.inc - v.tax),
+              expense: v.exp
+          }))
+
+      const incomeForCalc = (isUserPro && showNetIncome) ? (totalIncome - totalTaxTransfers) : totalIncome
+      const netSavings = incomeForCalc - totalExpense
+      const savingsRate = incomeForCalc > 0 ? (netSavings / incomeForCalc) * 100 : 0
+      
+      const days = Math.max(1, (new Date(pieRange === 'CUSTOM' ? customEnd : new Date().toISOString()).getTime() - new Date(pieRange === 'CUSTOM' ? customStart : pieRange === 'MONTH' ? new Date(selectedYear, selectedMonth-1, 1).toISOString() : new Date(new Date().getFullYear(), 0, 1).toISOString()).getTime()) / (86400000))
+      const burnRate = totalExpense / days
+
+      return {
+          processedIncome: finalizeMap(incMap),
+          processedExpenses: finalizeMap(expMap),
+          kpi: { netSavings, savingsRate, burnRate },
+          cashFlowData: cashFlow,
+          tradingPL: totalTradingPL
+      }
+
+  }, [allTransactions, allCategories, excludedCategoryIds, showNetIncome, isUserPro, taxBucketIds, pieRange, customStart, customEnd, selectedMonth, selectedYear])
+
+
+  const toggleCategoryFilter = (id: string) => {
+      setExcludedCategoryIds(prev => prev.includes(id) ? prev.filter(c => c !== id) : [...prev, id])
+  }
+
+  const months = Array.from({ length: 12 }, (_, i) => i + 1)
+  const years = [2024, 2025, 2026]
+  const rootCategoriesList = useMemo(() => allCategories.filter(c => !c.parent_id), [allCategories])
+
+  const totalIncomeValue = processedIncome.reduce((sum, item) => sum + item.value, 0)
+  const totalExpenseValue = processedExpenses.reduce((sum, item) => sum + item.value, 0)
+  
+  // Utilizzato nel tooltip del grafico Asset Allocation
   const totalInvestments = investmentData.reduce((sum, item) => sum + item.value, 0)
 
   return (
     <div className="min-h-screen bg-gray-50 pb-24">
-      {/* HEADER STICKY */}
+      
+      {/* HEADER & CONTROLLI */}
       <div className="bg-white sticky top-0 z-10 border-b border-gray-100 px-4 py-4 flex flex-col gap-4 shadow-sm">
         <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
                 <button onClick={onBack} className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors">
                     <ArrowLeft className="w-6 h-6 text-gray-700" />
                 </button>
-                <h1 className="text-xl font-bold text-gray-900">Analisi Finanziaria</h1>
+                <h1 className="text-xl font-bold text-gray-900">Analisi</h1>
+            </div>
+             <button onClick={onOpenSettings} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-600 border border-gray-100 active:scale-95"><Settings className="w-5 h-5" strokeWidth={2} /></button>
+        </div>
+        
+        {/* SEGMENTED CONTROL PERIODI */}
+        <div className="bg-gray-100 p-1 rounded-xl flex gap-1">
+            {(['MONTH', '6M', 'YEAR', 'CUSTOM'] as const).map((r) => (
+                <button 
+                    key={r} 
+                    onClick={() => setPieRange(r)} 
+                    className={cn(
+                        "flex-1 py-1.5 text-[11px] font-bold rounded-lg transition-all text-center uppercase tracking-wide", 
+                        pieRange === r 
+                            ? "bg-white text-gray-900 shadow-sm scale-[1.02]" 
+                            : "text-gray-400 hover:text-gray-600"
+                    )}
+                >
+                    {r === 'MONTH' ? 'Mese' : r === '6M' ? '6 Mesi' : r === 'YEAR' ? 'Anno' : 'Periodo'}
+                </button>
+            ))}
+        </div>
+            
+        {/* DATE SELECTORS & FILTER TOGGLE */}
+        <div className="flex justify-between items-center px-1">
+            <div className="flex items-center gap-3">
+                {pieRange === 'MONTH' && (
+                    <>
+                        <div className="relative group">
+                            <select value={selectedMonth} onChange={e => setSelectedMonth(Number(e.target.value))} className="appearance-none bg-transparent pl-0 pr-6 py-1 text-lg font-bold text-gray-900 outline-none cursor-pointer group-hover:text-blue-600 transition-colors">
+                                {months.map(m=><option key={m} value={m}>{new Date(2000,m-1).toLocaleDateString('it-IT',{month:'long'})}</option>)}
+                            </select>
+                            <ChevronDown className="w-4 h-4 text-gray-400 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none group-hover:text-blue-600" />
+                        </div>
+                        <div className="relative group">
+                            <select value={selectedYear} onChange={e => setSelectedYear(Number(e.target.value))} className="appearance-none bg-transparent pl-0 pr-5 py-1 text-lg font-bold text-gray-900 outline-none cursor-pointer group-hover:text-blue-600 transition-colors">
+                                {years.map(y=><option key={y} value={y}>{y}</option>)}
+                            </select>
+                            <ChevronDown className="w-4 h-4 text-gray-400 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none group-hover:text-blue-600" />
+                        </div>
+                    </>
+                )}
+                {pieRange === 'YEAR' && (
+                    <div className="relative group">
+                        <select value={selectedYear} onChange={e => setSelectedYear(Number(e.target.value))} className="appearance-none bg-transparent pl-0 pr-5 py-1 text-lg font-bold text-gray-900 outline-none cursor-pointer group-hover:text-blue-600 transition-colors">
+                            {years.map(y=><option key={y} value={y}>{y}</option>)}
+                        </select>
+                        <ChevronDown className="w-4 h-4 text-gray-400 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none group-hover:text-blue-600" />
+                    </div>
+                )}
+                {pieRange === 'CUSTOM' && (
+                    <div className="flex items-center gap-2">
+                        <div className="relative"><Calendar className="w-3 h-3 absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" /><input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} className="w-28 bg-gray-50 pl-7 pr-2 py-1.5 rounded-lg border border-gray-200 text-xs font-medium outline-none focus:border-blue-500" /></div>
+                        <span className="text-gray-300">-</span>
+                        <div className="relative"><Calendar className="w-3 h-3 absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" /><input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} className="w-28 bg-gray-50 pl-7 pr-2 py-1.5 rounded-lg border border-gray-200 text-xs font-medium outline-none focus:border-blue-500" /></div>
+                    </div>
+                )}
             </div>
 
-             <button 
-                onClick={onOpenSettings}
-                className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full transition-colors text-gray-600 border border-gray-100 active:scale-95"
-            >
-                <Settings className="w-5 h-5" strokeWidth={2} />
+            {/* Tasto Filtri */}
+            <button onClick={() => setIsFilterPanelOpen(!isFilterPanelOpen)} className={cn("flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-full border transition-all active:scale-95", isFilterPanelOpen ? "bg-gray-900 text-white border-gray-900 shadow-md" : "bg-white text-gray-600 border-gray-200 shadow-sm")}>
+                <Filter className="w-3 h-3" /> Filtri {excludedCategoryIds.length > 0 && <span className="bg-rose-500 w-1.5 h-1.5 rounded-full block animate-pulse" />}
             </button>
         </div>
-        
-        {/* CONTROLLI FILTRO TORTE (Month / 6M / Year / Custom) */}
-        <div className="flex flex-col gap-3 bg-gray-50 p-2 rounded-xl">
-            {/* Tasti Filtro */}
-            <div className="flex gap-1 overflow-x-auto hide-scrollbar">
-                {(['MONTH', '6M', 'YEAR', 'CUSTOM'] as const).map((r) => (
-                    <button
-                        key={r}
-                        onClick={() => setPieRange(r)}
-                        className={cn(
-                            "px-3 py-1.5 text-xs font-bold rounded-lg transition-all whitespace-nowrap flex-1",
-                            pieRange === r 
-                                ? "bg-white text-gray-900 shadow-sm border border-gray-100" 
-                                : "text-gray-400 hover:text-gray-600"
-                        )}
-                    >
-                        {r === 'MONTH' ? 'Mese' : r === '6M' ? 'Semestre' : r === 'YEAR' ? 'Anno' : 'Periodo'}
-                    </button>
-                ))}
+
+        {/* PANNELLO FILTRI (Espandibile) */}
+        {isFilterPanelOpen && (
+            <div className="bg-gray-50 rounded-2xl p-4 animate-in slide-in-from-top-4 fade-in duration-200 border border-gray-100">
+                <div className="flex justify-between items-center mb-3">
+                    <p className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Mostra / Nascondi Categorie</p>
+                    <button onClick={() => setExcludedCategoryIds([])} className="text-[10px] font-bold text-blue-600 hover:text-blue-700 hover:underline">Reset</button>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                    {rootCategoriesList.map(cat => {
+                        const isActive = !excludedCategoryIds.includes(cat.id)
+                        return (
+                            <button key={cat.id} onClick={() => toggleCategoryFilter(cat.id)} className={cn("text-[11px] px-3 py-1.5 rounded-full font-medium border transition-all active:scale-95", isActive ? "bg-white text-gray-900 border-gray-200 shadow-sm" : "bg-transparent text-gray-400 border-transparent line-through decoration-gray-300")}>
+                                {cat.name}
+                            </button>
+                        )
+                    })}
+                </div>
             </div>
-
-            {/* Controlli specifici per la selezione attiva */}
-            <div className="flex justify-end">
-                {pieRange === 'MONTH' && (
-                    <div className="flex gap-2 w-full justify-end">
-                        <select
-                            value={selectedMonth}
-                            onChange={(e) => setSelectedMonth(Number(e.target.value))}
-                            className="bg-white px-2 py-1 rounded-md text-xs font-bold text-gray-600 outline-none border border-gray-200 cursor-pointer text-right shadow-sm"
-                        >
-                            {months.map((m) => (
-                                <option key={m} value={m}>{new Date(2000, m - 1).toLocaleDateString('it-IT', { month: 'short' }).toUpperCase()}</option>
-                            ))}
-                        </select>
-                        <select
-                            value={selectedYear}
-                            onChange={(e) => setSelectedYear(Number(e.target.value))}
-                            className="bg-white px-2 py-1 rounded-md text-xs font-bold text-gray-600 outline-none border border-gray-200 cursor-pointer shadow-sm"
-                        >
-                            {years.map((y) => <option key={y} value={y}>{y}</option>)}
-                        </select>
-                    </div>
-                )}
-
-                {pieRange === 'YEAR' && (
-                    <div className="flex justify-end w-full">
-                        <select
-                            value={selectedYear}
-                            onChange={(e) => setSelectedYear(Number(e.target.value))}
-                            className="bg-white px-3 py-1 rounded-md text-xs font-bold text-gray-600 outline-none border border-gray-200 cursor-pointer shadow-sm"
-                        >
-                            {years.map((y) => <option key={y} value={y}>{y}</option>)}
-                        </select>
-                    </div>
-                )}
-
-                {pieRange === 'CUSTOM' && (
-                    <div className="flex items-center gap-2 w-full">
-                        <input 
-                            type="date" 
-                            value={customStart}
-                            onChange={(e) => setCustomStart(e.target.value)}
-                            className="flex-1 bg-white px-2 py-1.5 rounded-lg text-xs font-medium border border-gray-200 shadow-sm outline-none focus:ring-2 focus:ring-blue-500"
-                        />
-                        <span className="text-gray-300 font-bold">-</span>
-                        <input 
-                            type="date" 
-                            value={customEnd}
-                            onChange={(e) => setCustomEnd(e.target.value)}
-                            className="flex-1 bg-white px-2 py-1.5 rounded-lg text-xs font-medium border border-gray-200 shadow-sm outline-none focus:ring-2 focus:ring-blue-500"
-                        />
-                    </div>
-                )}
-            </div>
-        </div>
+        )}
       </div>
 
-      <div className="max-w-md mx-auto px-4 py-6 space-y-6">
+      <div className="max-w-md mx-auto px-4 py-6 space-y-8">
         
-        {/* CARD ENTRATE CATEGORIE */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
-          <div className="flex items-center gap-2 mb-6">
-                <div className="p-1.5 bg-emerald-50 rounded-lg">
-                    <TrendingUp className="w-4 h-4 text-emerald-600" />
+        {/* 1. KPI CARDS (Minimaliste) */}
+        <div className="grid grid-cols-3 gap-3">
+            {/* Cash Flow */}
+            <div className="p-4 bg-white rounded-2xl shadow-sm border border-gray-100 flex flex-col items-center justify-center text-center">
+                <div className={cn("p-2 rounded-full mb-2 bg-opacity-10", kpi.netSavings >= 0 ? "bg-emerald-500 text-emerald-600" : "bg-rose-500 text-rose-600")}>
+                    <Activity className="w-4 h-4" />
                 </div>
-                <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Entrate</h2>
+                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide mb-0.5">Cash Flow</p>
+                <p className={cn("text-sm font-black", kpi.netSavings >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                    {kpi.netSavings > 0 ? '+' : ''}{formatCurrency(kpi.netSavings)}
+                </p>
+            </div>
+            {/* Risparmio */}
+            <div className="p-4 bg-white rounded-2xl shadow-sm border border-gray-100 flex flex-col items-center justify-center text-center">
+                <div className="p-2 rounded-full mb-2 bg-blue-50 text-blue-600">
+                    <PiggyBank className="w-4 h-4" />
+                </div>
+                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide mb-0.5">Risparmio</p>
+                <p className="text-sm font-black text-gray-900">{kpi.savingsRate.toFixed(1)}%</p>
+            </div>
+            {/* Burn Rate */}
+            <div className="p-4 bg-white rounded-2xl shadow-sm border border-gray-100 flex flex-col items-center justify-center text-center">
+                <div className="p-2 rounded-full mb-2 bg-orange-50 text-orange-600">
+                    <Flame className="w-4 h-4" />
+                </div>
+                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide mb-0.5">Burn Rate</p>
+                <p className="text-sm font-black text-gray-900">{formatCurrency(kpi.burnRate)}<span className="text-[9px] text-gray-400 font-medium">/gg</span></p>
+            </div>
+        </div>
+
+        {/* 2. GRAFICO CASH FLOW (Clean) */}
+        <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
+            <div className="flex items-center justify-between mb-6">
+                <h2 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                    <div className="w-1 h-4 bg-gray-900 rounded-full"></div>
+                    Cash Flow Mensile
+                </h2>
+                {/* Legenda Custom */}
+                <div className="flex gap-3">
+                    <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-emerald-500"></div><span className="text-[10px] font-bold text-gray-500">In</span></div>
+                    <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-rose-500"></div><span className="text-[10px] font-bold text-gray-500">Out</span></div>
+                </div>
+            </div>
+            <div className="h-[220px] w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={cashFlowData} barGap={4}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f3f4f6" />
+                        <XAxis dataKey="date" fontSize={10} axisLine={false} tickLine={false} dy={10} stroke="#9ca3af" fontWeight={500} />
+                        <Tooltip cursor={{ fill: '#f9fafb', radius: 4 }} content={<CustomTooltip />} />
+                        <Bar dataKey={isUserPro && showNetIncome ? "netIncome" : "income"} name="Entrate" fill="#10b981" radius={[4, 4, 4, 4]} barSize={8} />
+                        <Bar dataKey="expense" name="Uscite" fill="#ef4444" radius={[4, 4, 4, 4]} barSize={8} />
+                    </BarChart>
+                </ResponsiveContainer>
+            </div>
+        </div>
+
+        {/* 3. ENTRATE (PIE CHART + TOGGLE P.IVA) */}
+        <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100 relative">
+          <div className="flex items-center justify-between mb-6">
+                <h2 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                    <div className="w-1 h-4 bg-emerald-500 rounded-full"></div>
+                    Entrate
+                </h2>
+                {isUserPro && (
+                    <button onClick={() => setShowNetIncome(!showNetIncome)} className={cn("text-[10px] font-bold px-2.5 py-1.5 rounded-full border transition-all flex items-center gap-1.5", showNetIncome ? "bg-purple-50 text-purple-700 border-purple-200" : "bg-white text-gray-400 border-gray-200 hover:border-gray-300")}>
+                        {showNetIncome ? <CheckCircle2 className="w-3 h-3" /> : <Banknote className="w-3 h-3" />}
+                        Netto Tasse
+                    </button>
+                )}
           </div>
 
           {loading ? (
-            <div className="h-64 flex flex-col items-center justify-center space-y-3 animate-pulse">
-               <div className="w-32 h-32 bg-gray-100 rounded-full"></div>
-            </div>
-          ) : incomeByCategory.length === 0 ? (
-            <div className="h-64 flex flex-col items-center justify-center text-center border-2 border-dashed border-gray-100 rounded-xl">
-              <div className="p-3 bg-gray-50 rounded-full mb-2">
-                 <BarChart3 className="w-6 h-6 text-gray-300" />
-              </div>
-              <p className="text-gray-400 text-sm font-medium">Nessun dato nel periodo</p>
-            </div>
+            <div className="h-64 flex items-center justify-center"><div className="w-32 h-32 bg-gray-100 rounded-full animate-pulse"></div></div>
+          ) : processedIncome.length === 0 ? (
+            <div className="h-48 flex items-center justify-center text-gray-300 text-xs border-2 border-dashed border-gray-100 rounded-xl bg-gray-50">Nessun dato nel periodo</div>
           ) : (
-            <div className="h-[300px] w-full">
+            <div className="h-[280px]">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
-                    data={incomeByCategory}
-                    cx="50%"
-                    cy="45%"
-                    innerRadius={0} // TORTA PIENA
-                    outerRadius={80}
-                    paddingAngle={2}
+                    data={processedIncome}
+                    cx="50%" cy="50%"
+                    innerRadius={65} outerRadius={85}
+                    paddingAngle={3}
                     dataKey="value"
-                    label={renderCustomizedLabel}
-                    labelLine={true}
+                    onClick={(data) => setActiveDrillCategory(data)}
+                    cursor="pointer"
+                    stroke="none"
                   >
-                    {incomeByCategory.map((entry, index) => (
-                      <Cell key={`cell-inc-${index}`} fill={entry.color} stroke="white" strokeWidth={2} />
-                    ))}
+                    {processedIncome.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} strokeWidth={activeDrillCategory?.id === entry.id ? 4 : 0} stroke={activeDrillCategory?.id === entry.id ? 'rgba(255,255,255,0.5)' : 'none'} />)}
                   </Pie>
-                  <Tooltip 
-                    formatter={(value: number | undefined) => [
-                        `${formatCurrency(value || 0)} (${(((value || 0) / (totalIncome || 1)) * 100).toFixed(1)}%)`,
-                        'Importo'
-                    ]}
-                    contentStyle={{ backgroundColor: 'white', borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                  />
-                  <Legend 
-                     layout="horizontal" 
-                     verticalAlign="bottom" 
-                     align="center"
-                     iconType="circle"
-                     wrapperStyle={{ fontSize: '11px', paddingTop: '20px' }}
-                  />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Legend verticalAlign="bottom" iconType="circle" wrapperStyle={{ fontSize: '11px', paddingTop: '20px', fontFamily: 'inherit' }} />
                 </PieChart>
               </ResponsiveContainer>
+              <div className="absolute top-[50%] left-0 right-0 text-center pointer-events-none -translate-y-8">
+                  <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider mb-0.5">Totale</p>
+                  <p className="text-xl font-black text-gray-900">{formatCurrency(totalIncomeValue)}</p>
+              </div>
             </div>
           )}
         </div>
 
-        {/* CARD SPESE CATEGORIE */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
-          <div className="flex items-center gap-2 mb-6">
-                <div className="p-1.5 bg-rose-50 rounded-lg">
-                    <TrendingDown className="w-4 h-4 text-rose-600" />
-                </div>
-                <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Uscite</h2>
+        {/* 4. USCITE (PIE CHART) */}
+        <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100 relative">
+          <div className="flex items-center justify-between mb-6">
+                <h2 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                    <div className="w-1 h-4 bg-rose-500 rounded-full"></div>
+                    Uscite
+                </h2>
           </div>
 
           {loading ? (
-            <div className="h-64 flex flex-col items-center justify-center space-y-3 animate-pulse">
-               <div className="w-32 h-32 bg-gray-100 rounded-full"></div>
-            </div>
-          ) : expensesByCategory.length === 0 ? (
-            <div className="h-64 flex flex-col items-center justify-center text-center border-2 border-dashed border-gray-100 rounded-xl">
-              <div className="p-3 bg-gray-50 rounded-full mb-2">
-                 <BarChart3 className="w-6 h-6 text-gray-300" />
-              </div>
-              <p className="text-gray-400 text-sm font-medium">Nessun dato nel periodo</p>
-            </div>
+            <div className="h-64 flex items-center justify-center"><div className="w-32 h-32 bg-gray-100 rounded-full animate-pulse"></div></div>
+          ) : processedExpenses.length === 0 ? (
+            <div className="h-48 flex items-center justify-center text-gray-300 text-xs border-2 border-dashed border-gray-100 rounded-xl bg-gray-50">Nessun dato nel periodo</div>
           ) : (
-            <div className="h-[300px] w-full">
+            <div className="h-[280px]">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
-                    data={expensesByCategory}
-                    cx="50%"
-                    cy="45%"
-                    innerRadius={0} // TORTA PIENA
-                    outerRadius={80}
-                    paddingAngle={2}
+                    data={processedExpenses}
+                    cx="50%" cy="50%"
+                    innerRadius={65} outerRadius={85}
+                    paddingAngle={3}
                     dataKey="value"
-                    label={renderCustomizedLabel}
-                    labelLine={true}
+                    onClick={(data) => setActiveDrillCategory(data)}
+                    cursor="pointer"
+                    stroke="none"
                   >
-                    {expensesByCategory.map((entry, index) => (
-                      <Cell key={`cell-exp-${index}`} fill={entry.color} stroke="white" strokeWidth={2} />
-                    ))}
+                    {processedExpenses.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} strokeWidth={activeDrillCategory?.id === entry.id ? 4 : 0} stroke={activeDrillCategory?.id === entry.id ? 'rgba(255,255,255,0.5)' : 'none'} />)}
                   </Pie>
-                  <Tooltip 
-                    formatter={(value: number | undefined) => [
-                        `${formatCurrency(value || 0)} (${(((value || 0) / (totalExpense || 1)) * 100).toFixed(1)}%)`,
-                        'Importo'
-                    ]}
-                    contentStyle={{ backgroundColor: 'white', borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                  />
-                  <Legend 
-                     layout="horizontal" 
-                     verticalAlign="bottom" 
-                     align="center"
-                     iconType="circle"
-                     wrapperStyle={{ fontSize: '11px', paddingTop: '20px' }}
-                  />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Legend verticalAlign="bottom" iconType="circle" wrapperStyle={{ fontSize: '11px', paddingTop: '20px' }} />
                 </PieChart>
               </ResponsiveContainer>
+              <div className="absolute top-[50%] left-0 right-0 text-center pointer-events-none -translate-y-8">
+                  <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider mb-0.5">Totale</p>
+                  <p className="text-xl font-black text-gray-900">{formatCurrency(totalExpenseValue)}</p>
+              </div>
             </div>
           )}
         </div>
 
-        {/* NUOVA CARD TRADING P&L (SOLO SE C'È QUALCOSA) */}
+        {/* 5. DRILL DOWN DETAIL (Appare quando clicchi una fetta) */}
+        {activeDrillCategory && (
+            <div className="bg-white rounded-3xl p-6 shadow-xl border border-gray-100 animate-in slide-in-from-bottom-4 relative z-30 ring-1 ring-black/5">
+                <div className="flex justify-between items-center mb-6">
+                    <div className="flex items-center gap-3">
+                        <div className="w-3 h-3 rounded-full" style={{ backgroundColor: activeDrillCategory.color }} />
+                        <h3 className="text-lg font-black text-gray-900">{activeDrillCategory.name}</h3>
+                    </div>
+                    <button onClick={() => setActiveDrillCategory(null)} className="p-2 bg-gray-50 rounded-full hover:bg-gray-100 transition-colors"><X className="w-4 h-4 text-gray-500" /></button>
+                </div>
+
+                <div className="space-y-6">
+                    {/* Sottocategorie */}
+                    {activeDrillCategory.subCategories.size > 0 && (
+                        <div>
+                            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-3">Ripartizione</p>
+                            <div className="space-y-2">
+                                {Array.from(activeDrillCategory.subCategories.entries()).sort((a,b)=>b[1]-a[1]).map(([name, val]) => (
+                                    <div key={name} className="flex justify-between items-center text-sm py-1 border-b border-gray-50 last:border-0">
+                                        <span className="text-gray-600 font-medium">{name}</span>
+                                        <span className="font-bold text-gray-900">{formatCurrency(val)}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Top Transactions */}
+                    <div>
+                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-3">Top 5 Transazioni</p>
+                        <div className="space-y-2">
+                            {activeDrillCategory.transactions.slice(0, 5).map(t => (
+                                <div key={t.id} className="flex justify-between items-center bg-gray-50 p-3 rounded-xl border border-gray-100">
+                                    <div className="overflow-hidden pr-2">
+                                        <p className="text-xs font-bold text-gray-900 truncate">{t.description || 'Nessuna descrizione'}</p>
+                                        <p className="text-[10px] text-gray-400 mt-0.5">{formatDate(t.date)}</p>
+                                    </div>
+                                    <span className="text-xs font-black whitespace-nowrap">{formatCurrency(Math.abs(t.amount))}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {/* 6. TRADING P&L */}
         {Math.abs(tradingPL) > 0.01 && (
-            <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex flex-col items-center text-center">
-                <div className={cn("p-2 rounded-xl mb-2", tradingPL >= 0 ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600")}>
-                    <CandlestickChart className="w-6 h-6" />
+            <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100 flex flex-col items-center text-center">
+                <div className={cn("p-2.5 rounded-full mb-3", tradingPL >= 0 ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600")}>
+                    <CandlestickChart className="w-5 h-5" />
                 </div>
-                <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">Trading P&L Realizzato</p>
+                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Trading P&L Realizzato</p>
                 <p className={cn("text-3xl font-black tracking-tight", tradingPL >= 0 ? "text-emerald-600" : "text-rose-600")}>
                     {tradingPL > 0 ? '+' : ''}{formatCurrency(tradingPL)}
-                </p>
-                <p className="text-[10px] text-gray-400 mt-2 font-medium">
-                    Guadagno/Perdita da vendite nel periodo selezionato
                 </p>
             </div>
         )}
 
-        {/* CARD ASSET ALLOCATION */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
-          <div className="flex items-center gap-2 mb-6">
-              <div className="p-1.5 bg-emerald-50 rounded-lg">
-                  <Wallet className="w-4 h-4 text-emerald-600" />
+        {/* 7. ASSET ALLOCATION */}
+        <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
+          <div className="flex items-center justify-between mb-6">
+              <h2 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                  <div className="w-1 h-4 bg-blue-600 rounded-full"></div>
+                  Asset Allocation
+              </h2>
+              <div className="p-1.5 bg-blue-50 rounded-lg text-blue-600">
+                  <Wallet className="w-4 h-4" />
               </div>
-              <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Asset Allocation</h2>
           </div>
 
           {investmentData.length === 0 ? (
-            <div className="h-64 flex flex-col items-center justify-center text-center border-2 border-dashed border-gray-100 rounded-xl">
-               <div className="p-3 bg-gray-50 rounded-full mb-2">
-                 <Wallet className="w-6 h-6 text-gray-300" />
-               </div>
-              <p className="text-gray-400 text-sm font-medium">Nessun investimento attivo</p>
+            <div className="h-48 flex flex-col items-center justify-center text-center border-2 border-dashed border-gray-100 rounded-xl bg-gray-50">
+              <p className="text-gray-400 text-xs font-medium">Nessun investimento</p>
             </div>
           ) : (
-            <div className="h-[300px] w-full">
+            <div className="h-[280px]">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
                     data={investmentData}
-                    cx="50%"
-                    cy="45%"
-                    innerRadius={0} // TORTA PIENA
-                    outerRadius={80}
+                    cx="50%" cy="50%"
+                    innerRadius={0} // PIE PIENA
+                    outerRadius={85}
                     paddingAngle={2}
                     dataKey="value"
                     label={renderCustomizedLabel}
                     labelLine={true}
+                    stroke="white"
+                    strokeWidth={2}
                   >
-                    {investmentData.map((entry, index) => (
-                      <Cell key={`cell-inv-${index}`} fill={entry.color} stroke="white" strokeWidth={2} />
-                    ))}
+                    {investmentData.map((entry, index) => <Cell key={`cell-inv-${index}`} fill={entry.color} />)}
                   </Pie>
                   <Tooltip 
-                    formatter={(value: number | undefined) => [
-                        `${formatCurrency(value || 0)} (${(((value || 0) / (totalInvestments || 1)) * 100).toFixed(1)}%)`,
+                    content={<CustomTooltip />}
+                    formatter={(value: any) => [
+                        `${formatCurrency(Number(value || 0))} (${(((Number(value) || 0) / (totalInvestments || 1)) * 100).toFixed(1)}%)`,
                         'Valore'
                     ]}
-                    contentStyle={{ backgroundColor: 'white', borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
                   />
-                  <Legend 
-                     layout="horizontal" 
-                     verticalAlign="bottom" 
-                     align="center"
-                     iconType="circle"
-                     wrapperStyle={{ fontSize: '11px', paddingTop: '20px' }}
-                  />
+                  <Legend layout="horizontal" verticalAlign="bottom" align="center" iconType="circle" wrapperStyle={{ fontSize: '11px', paddingTop: '20px' }} />
                 </PieChart>
               </ResponsiveContainer>
             </div>
           )}
         </div>
 
-        {/* CARD ANDAMENTO PATRIMONIO */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+        {/* 8. NET WORTH CHART */}
+        <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
           <div className="flex flex-col gap-4 mb-6">
-            <div className="flex items-center gap-2">
-                <div className="p-1.5 bg-blue-50 rounded-lg">
-                    <TrendingUp className="w-4 h-4 text-blue-600" />
+            <div className="flex items-center justify-between">
+                <h2 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                    <div className="w-1 h-4 bg-indigo-600 rounded-full"></div>
+                    Trend Patrimonio
+                </h2>
+                <div className="p-1.5 bg-indigo-50 rounded-lg text-indigo-600">
+                    <TrendingUp className="w-4 h-4" />
                 </div>
-                <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Trend Patrimonio</h2>
             </div>
             
-            {/* Pulsanti Intervallo per Linea */}
-            <div className="flex gap-2 overflow-x-auto pb-2 -mx-2 px-2 hide-scrollbar">
+            <div className="flex bg-gray-50 p-1 rounded-xl">
               {(['1M', '3M', '6M', 'YTD', 'ALL'] as const).map((range) => (
-                <button
-                  key={range}
-                  onClick={() => setLineRange(range)}
-                  className={cn(
-                    "px-4 py-1.5 rounded-full text-xs font-bold transition-all whitespace-nowrap border",
-                    lineRange === range
-                      ? "text-white border-transparent shadow-md shadow-blue-100"
-                      : "bg-white text-gray-500 border-gray-100 hover:bg-gray-50"
-                  )}
-                  style={lineRange === range ? { backgroundColor: primaryColor || '#3b82f6' } : {}}
+                <button 
+                    key={range} 
+                    onClick={() => setLineRange(range)} 
+                    className={cn(
+                        "flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all", 
+                        lineRange === range ? "bg-white text-gray-900 shadow-sm" : "text-gray-400 hover:text-gray-600"
+                    )}
                 >
-                  {range === '1M' ? '1 Mese' : range === '3M' ? '3 Mesi' : range === '6M' ? '6 Mesi' : range === 'YTD' ? 'Anno' : 'Tutto'}
+                  {range}
                 </button>
               ))}
             </div>
           </div>
 
           {netWorthData.length === 0 ? (
-            <div className="h-64 flex flex-col items-center justify-center text-center border-2 border-dashed border-gray-100 rounded-xl">
-               <div className="p-3 bg-gray-50 rounded-full mb-2">
-                 <TrendingUp className="w-6 h-6 text-gray-300" />
-               </div>
-              <p className="text-gray-400 text-sm font-medium">Nessun dato storico</p>
-            </div>
+            <div className="h-64 flex items-center justify-center text-gray-300 text-xs border-2 border-dashed border-gray-100 rounded-xl bg-gray-50">Nessun dato storico</div>
           ) : (
             <div className="h-[250px] w-full -ml-4">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={netWorthData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" vertical={false} />
-                  <XAxis 
-                    dataKey="date" 
-                    stroke="#9ca3af"
-                    fontSize={10}
-                    tickLine={false}
-                    axisLine={false}
-                    dy={10}
-                  />
-                  <YAxis 
-                    stroke="#9ca3af"
-                    fontSize={10}
-                    tickFormatter={(value) => `€${value/1000}k`}
-                    tickLine={false}
-                    axisLine={false}
-                    dx={-10}
-                  />
-                  <Tooltip 
-                    formatter={(value: number | undefined) => [formatCurrency(value || 0), 'Patrimonio']}
-                    labelStyle={{ color: '#6b7280', marginBottom: '4px' }}
-                    contentStyle={{ backgroundColor: 'white', borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                  />
-                  <Line 
-                    type="monotone" 
-                    dataKey="netWorth" 
-                    stroke={primaryColor || '#3b82f6'}
-                    strokeWidth={3}
-                    dot={false}
-                    activeDot={{ r: 6, strokeWidth: 0 }}
-                  />
+                  <XAxis dataKey="date" stroke="#9ca3af" fontSize={10} tickLine={false} axisLine={false} dy={10} />
+                  <YAxis stroke="#9ca3af" fontSize={10} tickFormatter={(value) => `€${value/1000}k`} tickLine={false} axisLine={false} dx={-10} />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Line type="monotone" dataKey="netWorth" stroke={primaryColor || '#3b82f6'} strokeWidth={3} dot={false} activeDot={{ r: 6, strokeWidth: 0, fill: primaryColor || '#3b82f6' }} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
           )}
         </div>
+
       </div>
     </div>
   )

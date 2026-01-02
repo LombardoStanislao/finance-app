@@ -1,12 +1,12 @@
 import { useState, useEffect, useMemo } from 'react'
-import { ArrowLeft, Save, Plus, Edit2, Trash2, X, LogOut, User, Palette, Layers, CheckCircle2, ArrowUpDown, AlertTriangle, GripVertical, AlertOctagon, Wallet, ChevronRight, Lock, Briefcase, Calculator } from 'lucide-react'
+import { ArrowLeft, Save, Plus, Edit2, Trash2, X, LogOut, User, Palette, Layers, CheckCircle2, ArrowUpDown, AlertTriangle, GripVertical, AlertOctagon, Wallet, ChevronRight, Lock, Briefcase, Calculator, ChevronDown } from 'lucide-react'
 import { supabase, type Category } from '../lib/supabase'
 import { cn } from '../lib/utils'
 
 // DND Kit Imports
 import {
   DndContext,
-  closestCenter,
+  closestCorners,
   KeyboardSensor,
   PointerSensor,
   TouchSensor,
@@ -22,7 +22,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { restrictToVerticalAxis, restrictToParentElement } from '@dnd-kit/modifiers';
+import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
 
 interface SettingsProps {
   onBack: () => void
@@ -48,14 +48,18 @@ function SortableCategoryItem({
     onEdit, 
     onDelete, 
     renderChildren,
-    disabled 
+    disabled,
+    isCollapsed,
+    onToggleCollapse
 }: { 
     category: CategoryWithChildren, 
     level: number, 
     onEdit: (c: CategoryWithChildren) => void, 
     onDelete: (id: string) => void,
     renderChildren: (c: CategoryWithChildren, l: number) => React.ReactNode,
-    disabled: boolean
+    disabled: boolean,
+    isCollapsed: boolean,
+    onToggleCollapse: (id: string) => void
 }) {
     const {
         attributes,
@@ -72,31 +76,55 @@ function SortableCategoryItem({
         marginLeft: `${level * 16}px`,
         zIndex: isDragging ? 50 : 'auto',
         position: 'relative' as const,
+        touchAction: 'pan-y',
     };
 
-    const isSystemCategory = category.name === '📉 Commissioni Investimenti';
+    const isSystemCategory = category.name === 'Commissioni Investimenti';
+    const hasChildren = category.children && category.children.length > 0;
 
     return (
-        <div ref={setNodeRef} style={style} className={cn("group touch-none", isDragging && "opacity-50")}>
+        <div ref={setNodeRef} style={style} className={cn("group", isDragging && "opacity-50 relative z-50")}>
             <div className={cn(
                 "flex items-center justify-between py-2.5 px-2 border-b border-gray-50 last:border-0 rounded-lg transition-colors",
                 isDragging ? "bg-blue-50 border-blue-100 shadow-sm" : "hover:bg-gray-50 bg-white"
             )}>
-                <div className="flex items-center gap-2 flex-1 min-w-0">
+                <div className="flex items-center gap-1 flex-1 min-w-0">
                     {/* Drag Handle */}
                     {!disabled && (
-                         <div {...attributes} {...listeners} className="cursor-grab active:cursor-grabbing p-1 -ml-1 text-gray-300 hover:text-gray-500 touch-none">
+                         <div 
+                            {...attributes} 
+                            {...listeners} 
+                            className="cursor-grab active:cursor-grabbing p-2 text-gray-300 hover:text-gray-500 touch-none"
+                         >
                             <GripVertical className="w-4 h-4" />
                         </div>
                     )}
+
+                    {/* Toggle Collapse Button (Solo se ha figli) */}
+                    {hasChildren ? (
+                        <button 
+                            onClick={() => onToggleCollapse(category.id)}
+                            className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-md transition-colors"
+                        >
+                            {isCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                        </button>
+                    ) : (
+                        // Spacer invisibile per allineare
+                        <div className="w-6" />
+                    )}
                    
-                    <div className="min-w-0 flex items-center gap-2">
-                        <p className="font-medium text-gray-900 text-sm truncate">{category.name}</p>
+                    <div className="min-w-0 flex items-center gap-2 ml-1">
+                        <p className="font-medium text-gray-900 text-sm truncate select-none">{category.name}</p>
                         {isSystemCategory && <Lock className="w-3 h-3 text-gray-400" />}
                         {category.budget_limit && (
                             <p className="text-[10px] text-gray-400">
                                 Budget: €{category.budget_limit.toFixed(0)}
                             </p>
+                        )}
+                        {hasChildren && isCollapsed && (
+                            <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded-full">
+                                {category.children?.length}
+                            </span>
                         )}
                     </div>
                 </div>
@@ -132,9 +160,11 @@ function SortableCategoryItem({
                 </div>
             </div>
             
-            {/* Renderizzazione ricorsiva dei figli */}
-            {category.children && category.children.length > 0 && (
-                <div>{renderChildren(category, level + 1)}</div>
+            {/* Renderizzazione ricorsiva dei figli (SOLO SE NON COLLAPSED) */}
+            {!isCollapsed && hasChildren && (
+                <div className="animate-in slide-in-from-top-1 fade-in duration-200">
+                    {renderChildren(category, level + 1)}
+                </div>
             )}
         </div>
     );
@@ -160,6 +190,9 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
   const [categories, setCategories] = useState<CategoryWithRank[]>([])
   const [sortCategoriesBy, setSortCategoriesBy] = useState<SortOption>('rank')
   
+  // State per Categorie Chiuse (Collapsed)
+  const [collapsedIds, setCollapsedIds] = useState<string[]>([])
+
   // Form Aggiunta Categoria
   const [newCategoryName, setNewCategoryName] = useState('')
   const [newCategoryBudget, setNewCategoryBudget] = useState('')
@@ -187,7 +220,7 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     }),
     useSensor(TouchSensor, {
         activationConstraint: {
-            delay: 250, 
+            delay: 100, 
             tolerance: 5,
         },
     })
@@ -212,7 +245,6 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
       setDisplayName(user.user_metadata.display_name)
     }
 
-    // Carica dati profilo estesi
     const { data: profile } = await supabase
       .from('profiles')
       .select('is_pro_tax, tax_profitability_coeff, tax_inps_rate, tax_flat_rate')
@@ -243,6 +275,15 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
       onColorChange(val) 
   }
 
+  // --- TOGGLE COLLAPSE ---
+  function toggleCollapse(id: string) {
+      setCollapsedIds(prev => 
+          prev.includes(id) 
+            ? prev.filter(pId => pId !== id) 
+            : [...prev, id]
+      )
+  }
+
   async function handleSaveProfile(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
@@ -254,13 +295,11 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
       if (userError) throw userError
       if (!user) throw new Error('Utente non autenticato')
 
-      // 1. Aggiorna Nome
       const { error: authErr } = await supabase.auth.updateUser({
         data: { display_name: displayName }
       })
       if (authErr) throw authErr
 
-      // 2. Aggiorna Colore & Dati Fiscali
       const { error: profileErr } = await supabase
         .from('profiles')
         .upsert({ 
@@ -274,7 +313,6 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
         })
       if (profileErr) throw profileErr
 
-      // 3. Aggiorna Liquidità Iniziale
       const liquidityAmount = parseFloat(initialLiquidity) || 0
       
       const { data: existingInitial } = await supabase
@@ -357,7 +395,6 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
       }
   }
 
-  // --- LOGICA CATEGORIE ---
   async function loadCategories() {
     try {
       const { data: { user } } = await supabase.auth.getUser()
@@ -433,17 +470,28 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     if (!over || active.id === over.id) return;
 
     const activeItem = categories.find(c => c.id === active.id);
-    const overItem = categories.find(c => c.id === over.id);
+    let overItem = categories.find(c => c.id === over.id);
 
     if (!activeItem || !overItem) return;
+
+    // INTELLIGENT BUBBLING:
+    if (activeItem.parent_id !== overItem.parent_id) {
+        if (activeItem.parent_id === null && overItem.parent_id !== null) {
+            const parentOfOver = categories.find(c => c.id === overItem?.parent_id);
+            if (parentOfOver && parentOfOver.parent_id === null) {
+                overItem = parentOfOver; 
+            }
+        }
+    }
+
     if (activeItem.parent_id !== overItem.parent_id) return;
 
     const siblings = categories
         .filter(c => c.parent_id === activeItem.parent_id && c.type === activeItem.type)
         .sort((a: any, b: any) => (a.rank ?? 0) - (b.rank ?? 0));
     
-    const oldIndex = siblings.findIndex(x => x.id === active.id);
-    const newIndex = siblings.findIndex(x => x.id === over.id);
+    const oldIndex = siblings.findIndex(x => x.id === activeItem.id);
+    const newIndex = siblings.findIndex(x => x.id === overItem.id);
 
     const newOrder = arrayMove(siblings, oldIndex, newIndex);
 
@@ -558,7 +606,6 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
     e.preventDefault()
     if (!editingCategory) return
     
-    // SAFETY CHECK SERVER-SIDE
     if (editingCategory.name === 'Commissioni Investimenti') {
         alert('Modifica non consentita per categoria di sistema.');
         return;
@@ -593,7 +640,6 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
   async function handleDeleteCategory(categoryId: string) {
     const cat = categories.find(c => c.id === categoryId)
     
-    // BLOCCO ELIMINAZIONE PER CATEGORIA DI SISTEMA
     if (cat?.name === 'Commissioni Investimenti') {
         alert('Questa è una categoria di sistema per le commissioni. Non può essere eliminata.')
         return
@@ -641,6 +687,8 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
                         onEdit={openEditModal}
                         onDelete={handleDeleteCategory}
                         disabled={sortCategoriesBy === 'name'}
+                        isCollapsed={collapsedIds.includes(cat.id)}
+                        onToggleCollapse={toggleCollapse}
                         renderChildren={(parent, lvl) => (
                            renderSortableList(parent.children || [], lvl)
                         )}
@@ -838,9 +886,9 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
         {/* CATEGORIE DND SECTION */}
         <DndContext 
             sensors={sensors} 
-            collisionDetection={closestCenter} 
+            collisionDetection={closestCorners} 
             onDragEnd={handleDragEnd}
-            modifiers={[restrictToVerticalAxis, restrictToParentElement]}
+            modifiers={[restrictToVerticalAxis]}
         >
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
             <div className="px-5 py-4 border-b border-gray-100 bg-gray-50/50 flex items-center justify-between">

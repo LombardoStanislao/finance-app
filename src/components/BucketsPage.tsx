@@ -343,8 +343,9 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                                 setEditingBucket(bucket)
                                 setEditBucketName(bucket.name)
                                 setEditBucketDistribution((bucket.distribution_percentage || 0).toString())
-                                setEditBucketBalance((bucket.current_balance || 0).toString())
-                                setEditBucketTarget((bucket.target_amount || 0).toString())
+                                // QUI E' STATA APPLICATA LA MODIFICA: .toFixed(2)
+                                setEditBucketBalance((bucket.current_balance || 0).toFixed(2)) 
+                                setEditBucketTarget((bucket.target_amount || 0).toFixed(2))
                                 setError(null)
                             }}
                             className="p-2 text-gray-300 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"

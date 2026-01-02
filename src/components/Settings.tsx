@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { ArrowLeft, Save, Plus, Edit2, Trash2, X, LogOut, User, Palette, Layers, CheckCircle2, ArrowUpDown, AlertTriangle, GripVertical, AlertOctagon, Wallet, ChevronRight, Lock } from 'lucide-react'
+import { ArrowLeft, Save, Plus, Edit2, Trash2, X, LogOut, User, Palette, Layers, CheckCircle2, ArrowUpDown, AlertTriangle, GripVertical, AlertOctagon, Wallet, ChevronRight, Lock, Briefcase, Calculator } from 'lucide-react'
 import { supabase, type Category } from '../lib/supabase'
 import { cn } from '../lib/utils'
 
@@ -74,7 +74,7 @@ function SortableCategoryItem({
         position: 'relative' as const,
     };
 
-    const isSystemCategory = category.name === 'Commissioni Investimenti';
+    const isSystemCategory = category.name === '📉 Commissioni Investimenti';
 
     return (
         <div ref={setNodeRef} style={style} className={cn("group touch-none", isDragging && "opacity-50")}>
@@ -83,7 +83,7 @@ function SortableCategoryItem({
                 isDragging ? "bg-blue-50 border-blue-100 shadow-sm" : "hover:bg-gray-50 bg-white"
             )}>
                 <div className="flex items-center gap-2 flex-1 min-w-0">
-                    {/* Drag Handle - Visibile solo se non disabilitato e non di sistema (opzionale: permettiamo il reorder anche alle sistema) */}
+                    {/* Drag Handle */}
                     {!disabled && (
                          <div {...attributes} {...listeners} className="cursor-grab active:cursor-grabbing p-1 -ml-1 text-gray-300 hover:text-gray-500 touch-none">
                             <GripVertical className="w-4 h-4" />
@@ -144,6 +144,13 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
   // --- STATE: Profilo ---
   const [displayName, setDisplayName] = useState('')
   const [initialLiquidity, setInitialLiquidity] = useState<string>('')
+  
+  // --- STATE: Profilo Fiscale (P.IVA) ---
+  const [isProTax, setIsProTax] = useState(false)
+  const [profitabilityCoeff, setProfitabilityCoeff] = useState<string>('78')
+  const [inpsRate, setInpsRate] = useState<string>('26.23')
+  const [flatTaxRate, setFlatTaxRate] = useState<string>('5')
+
   const [loading, setLoading] = useState(false)
   const [profileError, setProfileError] = useState<string | null>(null)
   const [profileSuccess, setProfileSuccess] = useState(false)
@@ -205,6 +212,20 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
       setDisplayName(user.user_metadata.display_name)
     }
 
+    // Carica dati profilo estesi
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('is_pro_tax, tax_profitability_coeff, tax_inps_rate, tax_flat_rate')
+      .eq('id', user.id)
+      .maybeSingle()
+
+    if (profile) {
+        setIsProTax(profile.is_pro_tax || false)
+        if (profile.tax_profitability_coeff) setProfitabilityCoeff(profile.tax_profitability_coeff.toString())
+        if (profile.tax_inps_rate) setInpsRate(profile.tax_inps_rate.toString())
+        if (profile.tax_flat_rate) setFlatTaxRate(profile.tax_flat_rate.toString())
+    }
+
     const { data: initialTransaction } = await supabase
       .from('transactions')
       .select('amount')
@@ -239,12 +260,16 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
       })
       if (authErr) throw authErr
 
-      // 2. Aggiorna Colore
+      // 2. Aggiorna Colore & Dati Fiscali
       const { error: profileErr } = await supabase
         .from('profiles')
         .upsert({ 
             id: user.id, 
             theme_color: colorHex,
+            is_pro_tax: isProTax,
+            tax_profitability_coeff: parseFloat(profitabilityCoeff),
+            tax_inps_rate: parseFloat(inpsRate),
+            tax_flat_rate: parseFloat(flatTaxRate),
             updated_at: new Date().toISOString()
         })
       if (profileErr) throw profileErr
@@ -728,16 +753,87 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
                     Scegli un colore dallo spettro o inserisci il codice HEX. Verrà salvato nel tuo profilo.
                 </p>
             </div>
-
-            {profileError && (
-                <div className="p-3 bg-red-50 text-red-600 text-sm rounded-lg flex items-center gap-2 animate-in fade-in">
-                    <AlertTriangle className="w-4 h-4 shrink-0" />
-                    {profileError}
-                </div>
-            )}
-            {profileSuccess && <div className="flex items-center gap-2 text-emerald-600 bg-emerald-50 p-3 rounded-lg text-sm font-medium"><CheckCircle2 className="w-4 h-4" /> Salvato con successo!</div>}
           </div>
         </div>
+
+        {/* 3. PROFILO FISCALE (NUOVO) */}
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-100 bg-gray-50/50 flex items-center gap-2">
+                <Briefcase className="w-4 h-4 text-purple-600" />
+                <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Profilo Fiscale (P.IVA)</h2>
+            </div>
+            <div className="p-5 space-y-5">
+                <div className="flex items-center justify-between">
+                    <div>
+                        <p className="text-sm font-bold text-gray-900">Regime Forfettario</p>
+                        <p className="text-xs text-gray-500">Abilita calcolo automatico tasse</p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                        <input 
+                            type="checkbox" 
+                            className="sr-only peer" 
+                            checked={isProTax} 
+                            onChange={() => setIsProTax(!isProTax)} 
+                        />
+                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:bg-purple-600 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all"></div>
+                    </label>
+                </div>
+
+                {isProTax && (
+                    <div className="space-y-4 pt-2 animate-in fade-in slide-in-from-top-2">
+                        <div>
+                            <label className="text-xs font-bold text-gray-500 uppercase ml-1 block mb-1">Coefficiente di Redditività (%)</label>
+                            <div className="relative">
+                                <Calculator className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                                <input
+                                    type="number"
+                                    step="0.01"
+                                    value={profitabilityCoeff}
+                                    onChange={(e) => setProfitabilityCoeff(e.target.value)}
+                                    className="w-full pl-10 pr-4 py-3 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-purple-500 font-medium text-sm"
+                                    placeholder="Es. 78"
+                                />
+                            </div>
+                            <p className="text-[10px] text-gray-400 mt-1 ml-1">Percentuale del fatturato su cui calcolare le tasse.</p>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4">
+                            <div>
+                                <label className="text-xs font-bold text-gray-500 uppercase ml-1 block mb-1">Aliquota INPS (%)</label>
+                                <input
+                                    type="number"
+                                    step="0.01"
+                                    value={inpsRate}
+                                    onChange={(e) => setInpsRate(e.target.value)}
+                                    className="w-full p-3 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-purple-500 font-medium text-sm"
+                                    placeholder="Es. 26.23"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-xs font-bold text-gray-500 uppercase ml-1 block mb-1">Imposta Sostitutiva (%)</label>
+                                <input
+                                    type="number"
+                                    step="0.01"
+                                    value={flatTaxRate}
+                                    onChange={(e) => setFlatTaxRate(e.target.value)}
+                                    className="w-full p-3 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-purple-500 font-medium text-sm"
+                                    placeholder="Es. 5 o 15"
+                                />
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+        </div>
+
+        {/* FEEDBACK SALVATAGGIO */}
+        {profileError && (
+            <div className="p-3 bg-red-50 text-red-600 text-sm rounded-lg flex items-center gap-2 animate-in fade-in">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                {profileError}
+            </div>
+        )}
+        {profileSuccess && <div className="flex items-center gap-2 text-emerald-600 bg-emerald-50 p-3 rounded-lg text-sm font-medium"><CheckCircle2 className="w-4 h-4" /> Salvato con successo!</div>}
 
         {/* CATEGORIE DND SECTION */}
         <DndContext 

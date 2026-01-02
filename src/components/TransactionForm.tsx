@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { X, TrendingUp, TrendingDown, ArrowRightLeft, Calendar, AlignLeft, Wallet, PieChart, Repeat, PiggyBank } from 'lucide-react'
-import { supabase, type Category, type Bucket, type Investment, type Transaction } from '../lib/supabase'
+import { X, TrendingUp, TrendingDown, ArrowRightLeft, Calendar, AlignLeft, PieChart, PiggyBank, Briefcase } from 'lucide-react'
+import { supabase, type Category, type Bucket, type Transaction } from '../lib/supabase'
 import { cn, formatCurrency } from '../lib/utils'
 
 interface TransactionFormProps {
@@ -8,7 +8,7 @@ interface TransactionFormProps {
   onClose: () => void
   onSuccess: () => void
   primaryColor?: string
-  editingTransaction?: any
+  editingTransaction?: Transaction | null
 }
 
 interface CategoryWithChildren extends Category {
@@ -19,6 +19,14 @@ interface BucketWithTarget extends Bucket {
   target_amount?: number
 }
 
+// Interfaccia per il profilo fiscale
+interface TaxProfile {
+    is_pro_tax: boolean
+    tax_profitability_coeff: number
+    tax_inps_rate: number
+    tax_flat_rate: number
+}
+
 export default function TransactionForm({ isOpen, onClose, onSuccess, primaryColor = 'blue', editingTransaction }: TransactionFormProps) {
   const [amount, setAmount] = useState('')
   const [categoryId, setCategoryId] = useState('')
@@ -26,378 +34,375 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
   const [description, setDescription] = useState('')
   const [type, setType] = useState<'income' | 'expense' | 'transfer'>('expense')
   const [bucketId, setBucketId] = useState<string>('')
+  
+  // Stati per Auto-Distribuzione Classica
   const [applyAutoSplit, setApplyAutoSplit] = useState(false)
+  
+  // Stati per Transfer
   const [transferSource, setTransferSource] = useState<string>('')
-  const [transferDestinationType, setTransferDestinationType] = useState<'investment' | 'bucket'>('investment')
   const [transferDestination, setTransferDestination] = useState<string>('')
+  
   const [editingId, setEditingId] = useState<string | null>(null)
   
-  const [categories, setCategories] = useState<Category[]>([])
-  const [categoryTree, setCategoryTree] = useState<CategoryWithChildren[]>([])
-  const [filteredCategoryTree, setFilteredCategoryTree] = useState<CategoryWithChildren[]>([])
+  // Dati caricati
+  const [categories, setCategories] = useState<CategoryWithChildren[]>([])
   const [buckets, setBuckets] = useState<BucketWithTarget[]>([])
-  const [investments, setInvestments] = useState<Investment[]>([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  
+  // Stati P.IVA
+  const [taxProfile, setTaxProfile] = useState<TaxProfile | null>(null)
+  const [isInvoice, setIsInvoice] = useState(false)
+  const [autoSaveTaxes, setAutoSaveTaxes] = useState(true)
 
-  // Nuovo stato per le distribuzioni collegate
-  const [relatedDistributions, setRelatedDistributions] = useState<Transaction[]>([])
+  const [loading, setLoading] = useState(false)
 
   useEffect(() => {
     if (isOpen) {
-      loadCategories()
-      loadBuckets()
-      loadInvestments()
-      
+      loadData()
       if (editingTransaction) {
         setEditingId(editingTransaction.id)
         setAmount(Math.abs(editingTransaction.amount).toString())
-        setCategoryId(editingTransaction.category_id)
-        setDate(new Date(editingTransaction.date).toISOString().split('T')[0])
+        setCategoryId(editingTransaction.category_id || '')
+        setDate(editingTransaction.date.split('T')[0])
         setDescription(editingTransaction.description || '')
-        setType(editingTransaction.type)
         
-        if (editingTransaction.type === 'transfer') {
-          setTransferSource(editingTransaction.bucket_id || 'unassigned')
-          if (editingTransaction.investment_id) {
-            setTransferDestinationType('investment')
-            setTransferDestination(editingTransaction.investment_id)
-          } else {
-            setTransferDestinationType('bucket')
-            setTransferDestination('') 
-          }
-          setBucketId('')
-          setApplyAutoSplit(false)
-        } else {
-          setBucketId(editingTransaction.bucket_id || '')
-          setApplyAutoSplit(false)
-          setTransferSource('')
-          setTransferDestinationType('investment')
-          setTransferDestination('')
-        }
-
-        // Se è un'entrata, cerca distribuzioni collegate usando il TIMESTAMP preciso
-        if (editingTransaction.type === 'income') {
-            loadRelatedDistributions(editingTransaction)
-        } else {
-            setRelatedDistributions([])
-        }
-
+        // Gestione tipo 'initial' come 'income' visivamente
+        setType(editingTransaction.type === 'initial' ? 'income' : editingTransaction.type)
+        
+        setBucketId(editingTransaction.bucket_id || '')
+        // Reset special flags on edit to avoid confusion
+        setIsInvoice(false)
+        setApplyAutoSplit(false)
       } else {
         resetForm()
       }
     }
   }, [isOpen, editingTransaction])
 
-  async function loadRelatedDistributions(sourceTx: any) {
-    if (!sourceTx?.created_at) return
+  // Reset switch P.IVA quando cambia il tipo
+  useEffect(() => {
+      if (type !== 'income') setIsInvoice(false)
+      // Reset categoria se cambio tipo, per evitare incongruenze
+      setCategoryId('') 
+  }, [type])
 
-    const sourceTime = new Date(sourceTx.created_at).getTime()
-    const timeStart = new Date(sourceTime - 100).toISOString()
-    const timeEnd = new Date(sourceTime + 5000).toISOString()
+  async function loadData() {
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
 
-    const { data } = await supabase
-        .from('transactions')
+      // 1. Load Categories
+      const { data: cats } = await supabase
+        .from('categories')
         .select('*')
-        .eq('user_id', (await supabase.auth.getUser()).data.user?.id)
-        .eq('type', 'transfer')
-        .gte('created_at', timeStart)
-        .lte('created_at', timeEnd)
-        .ilike('description', 'Distribuzione automatica%')
+        .eq('user_id', user.id)
+        .order('name')
 
-    if (data) {
-        setRelatedDistributions(data)
+      // Organize categories tree
+      const categoryMap = new Map<string, CategoryWithChildren>()
+      const rootCategories: CategoryWithChildren[] = []
+      
+      cats?.forEach(cat => categoryMap.set(cat.id, { ...cat, children: [] }))
+      cats?.forEach(cat => {
+        if (cat.parent_id) {
+          const parent = categoryMap.get(cat.parent_id)
+          if (parent) parent.children?.push(categoryMap.get(cat.id)!)
+        } else {
+          rootCategories.push(categoryMap.get(cat.id)!)
+        }
+      })
+      setCategories(rootCategories)
+
+      // 2. Load Buckets
+      const { data: bucks } = await supabase
+        .from('buckets')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at')
+      setBuckets(bucks || [])
+
+      // 3. Load Tax Profile (P.IVA)
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('is_pro_tax, tax_profitability_coeff, tax_inps_rate, tax_flat_rate')
+        .eq('id', user.id)
+        .maybeSingle()
+      
+      if (profile && profile.is_pro_tax) {
+          setTaxProfile({
+              is_pro_tax: true,
+              tax_profitability_coeff: Number(profile.tax_profitability_coeff) || 78,
+              tax_inps_rate: Number(profile.tax_inps_rate) || 26.23,
+              tax_flat_rate: Number(profile.tax_flat_rate) || 5
+          })
+      } else {
+          setTaxProfile(null)
+      }
+
+    } catch (error) {
+      console.error('Error loading form data:', error)
     }
   }
 
   function resetForm() {
-    setEditingId(null)
     setAmount('')
     setCategoryId('')
     setDate(new Date().toISOString().split('T')[0])
     setDescription('')
     setType('expense')
     setBucketId('')
+    setEditingId(null)
     setApplyAutoSplit(false)
     setTransferSource('')
-    setTransferDestinationType('investment')
     setTransferDestination('')
-    setRelatedDistributions([])
+    setIsInvoice(false)
+    setAutoSaveTaxes(true)
   }
 
-  useEffect(() => {
-    if (categoryTree.length === 0) return
-    const filtered = categoryTree.filter(cat => cat.type === type)
-    setFilteredCategoryTree(filtered)
-    
-    const currentCategory = categories.find(c => c.id === categoryId)
-    if (!currentCategory || currentCategory.type !== type) {
-      const firstMatch = categories.find(c => c.type === type)
-      if (firstMatch) setCategoryId(firstMatch.id)
-      else setCategoryId('')
-    }
-  }, [type, categoryTree, categories])
+  // Helper per calcoli fiscali
+  const taxCalculations = (() => {
+      if (!taxProfile || !amount || type !== 'income' || !isInvoice) return null
+      
+      const gross = parseFloat(amount)
+      const taxable = gross * (taxProfile.tax_profitability_coeff / 100)
+      const inps = taxable * (taxProfile.tax_inps_rate / 100)
+      const tax = taxable * (taxProfile.tax_flat_rate / 100)
+      const net = gross - inps - tax
 
-  function buildCategoryTree(categories: Category[]): CategoryWithChildren[] {
-    const categoryMap = new Map<string, CategoryWithChildren>()
-    const rootCategories: CategoryWithChildren[] = []
-    categories.forEach(cat => categoryMap.set(cat.id, { ...cat, children: [] }))
-    categories.forEach(cat => {
-      const categoryWithChildren = categoryMap.get(cat.id)!
-      if (cat.parent_id) {
-        const parent = categoryMap.get(cat.parent_id)
-        if (parent) {
-          if (!parent.children) parent.children = []
-          parent.children.push(categoryWithChildren)
-        }
-      } else {
-        rootCategories.push(categoryWithChildren)
+      return {
+          gross,
+          taxable,
+          inps,
+          tax,
+          net
       }
-    })
-    const sortCategories = (cats: CategoryWithChildren[]) => {
-      cats.sort((a, b) => a.name.localeCompare(b.name))
-      cats.forEach(cat => { if (cat.children) sortCategories(cat.children) })
-    }
-    sortCategories(rootCategories)
-    return rootCategories
-  }
+  })()
 
-  function flattenCategories(categories: CategoryWithChildren[], level: number = 0): Array<{ id: string; name: string; level: number }> {
-    const result: Array<{ id: string; name: string; level: number }> = []
-    categories.forEach(category => {
-      const indent = '\u00A0\u00A0'.repeat(level)
-      const displayName = level > 0 ? `${indent}└ ${category.name}` : category.name
-      result.push({ id: category.id, name: displayName, level: level })
-      if (category.children && category.children.length > 0) {
-        result.push(...flattenCategories(category.children, level + 1))
-      }
-    })
-    return result
-  }
+  // Helper per trovare/creare bucket
+  async function getOrCreateBucket(userId: string, name: string): Promise<string> {
+      const existing = buckets.find(b => b.name === name)
+      if (existing) return existing.id
 
-  async function loadCategories() {
-    try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
-      const { data, error } = await supabase.from('categories').select('*').eq('user_id', user.id).order('name')
+      const { data, error } = await supabase
+          .from('buckets')
+          .insert({
+              user_id: userId,
+              name: name,
+              distribution_percentage: 0,
+              current_balance: 0,
+              target_amount: 0
+          })
+          .select('id')
+          .single()
+      
       if (error) throw error
-      const categoriesData = data || []
-      setCategories(categoriesData)
-      const tree = buildCategoryTree(categoriesData)
-      setCategoryTree(tree)
-    } catch (error) { console.error(error) }
+      return data.id
   }
 
-  async function loadBuckets() {
-    try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
-      const { data } = await supabase.from('buckets').select('*').eq('user_id', user.id).order('name')
-      setBuckets(data || [])
-    } catch (error) { console.error(error) }
-  }
+  async function handleAutoSplitLogic(userId: string, totalAmount: number, transactionDate: string) {
+      // FIX: Escludi esplicitamente i bucket fiscali dalla distribuzione automatica generica
+      const taxBucketNames = ['Aliquota INPS', 'Aliquota Imposta Sostitutiva']
 
-  async function loadInvestments() {
-    try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
-      const { data } = await supabase.from('investments').select('*').eq('user_id', user.id).order('type')
-      setInvestments(data || [])
-    } catch (error) { console.error(error) }
+      // Filtra i bucket attivi con % > 0, non pieni, E CHE NON SONO TASSE
+      const activeBuckets = buckets.filter(b => 
+          b.distribution_percentage > 0 && 
+          !taxBucketNames.includes(b.name) && // <-- FILTRO IMPORTANTE
+          (!b.target_amount || b.target_amount === 0 || (b.current_balance || 0) < b.target_amount)
+      )
+
+      if (activeBuckets.length === 0) return
+
+      let remainingToDistribute = totalAmount
+      
+      for (const bucket of activeBuckets) {
+          if (remainingToDistribute <= 0) break
+
+          let share = totalAmount * (bucket.distribution_percentage / 100)
+          
+          // Logica Waterfall (se c'è target e share lo supera)
+          if (bucket.target_amount && bucket.target_amount > 0) {
+              const spaceLeft = bucket.target_amount - (bucket.current_balance || 0)
+              if (share > spaceLeft) {
+                  share = Math.max(0, spaceLeft) // Riempi solo fino al target
+              }
+          }
+
+          // Arrotonda
+          share = Math.round((share + Number.EPSILON) * 100) / 100
+
+          if (share > 0) {
+              // Aggiorna bucket
+              await supabase.from('buckets').update({
+                  current_balance: (bucket.current_balance || 0) + share
+              }).eq('id', bucket.id)
+
+              // Crea transazione transfer child
+              await supabase.from('transactions').insert({
+                  user_id: userId,
+                  amount: -Math.abs(share), // Esce dalla liquidità (teorica) verso bucket
+                  type: 'transfer',
+                  description: `Distribuzione automatica a ${bucket.name}`,
+                  date: transactionDate,
+                  bucket_id: bucket.id,
+                  created_at: new Date().toISOString() // timestamp simile per raggruppare
+              })
+              
+              remainingToDistribute -= share
+          }
+      }
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
-    setError(null)
 
     try {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) throw new Error('Utente non autenticato')
 
-      const amountNumber = Number(parseFloat(amount))
+      const amountVal = parseFloat(amount)
+      let finalAmount = type === 'expense' ? -Math.abs(amountVal) : Math.abs(amountVal)
 
-      if (editingId) {
-        const updateData: any = {
-          amount: type === 'transfer' ? -amountNumber : (type === 'income' ? amountNumber : -amountNumber),
-          category_id: type === 'transfer' ? null : categoryId,
-          date: new Date(date).toISOString(),
-          description: description || null,
-          is_work_related: false,
-          type: type,
-          bucket_id: type === 'transfer' ? (transferSource === 'unassigned' ? null : transferSource) : (type === 'expense' && bucketId ? bucketId : null),
-          investment_id: type === 'transfer' && transferDestinationType === 'investment' ? transferDestination : null,
-        }
-        const { error } = await supabase.from('transactions').update(updateData).eq('id', editingId)
-        if (error) throw error
-        resetForm()
-        onSuccess()
-        onClose()
-        return
-      }
+      // --- GESTIONE TRANSFER ---
+      if (type === 'transfer') {
+          if (!transferSource || !transferDestination) throw new Error('Seleziona origine e destinazione')
+          
+          // 1. Prelievo da Source
+          if (transferSource === 'liquidity') {
+              // Creiamo un'uscita dalla liquidità (Transazione transfer negativa)
+              // Se destinazione è un bucket
+               const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', transferDestination).single()
+               await supabase.from('buckets').update({ current_balance: (bucket?.current_balance || 0) + amountVal }).eq('id', transferDestination)
+               
+               // Crea Transazione Transfer (visualizzata come uscita dalla liquidità)
+               await supabase.from('transactions').insert({
+                   user_id: user.id,
+                   amount: -Math.abs(amountVal),
+                   type: 'transfer',
+                   description: `Trasferimento a ${buckets.find(b=>b.id === transferDestination)?.name}`,
+                   date: new Date(date).toISOString(),
+                   bucket_id: transferDestination
+               })
+          } else {
+              // Source è un Bucket
+              const { data: sourceBucket } = await supabase.from('buckets').select('current_balance').eq('id', transferSource).single()
+              if ((sourceBucket?.current_balance || 0) < amountVal) throw new Error('Saldo insufficiente nel salvadanaio')
+              
+              // Togli da source
+              await supabase.from('buckets').update({ current_balance: (sourceBucket?.current_balance || 0) - amountVal }).eq('id', transferSource)
 
-      // 1. Uscita (Expense)
-      if (type === 'expense') {
-        const { error: tError } = await supabase.from('transactions').insert({
-            amount: -amountNumber,
-            category_id: categoryId,
-            date: new Date(date).toISOString(),
-            description: description || null,
-            is_work_related: false,
-            type: type,
-            bucket_id: bucketId || null,
-            user_id: user.id,
-          })
-        if (tError) throw tError
-        
-        if (bucketId) {
-          const bucket = buckets.find(b => b.id === bucketId)
-          if (bucket) {
-            await supabase.from('buckets').update({ current_balance: (bucket.current_balance || 0) - amountNumber }).eq('id', bucketId)
+              if (transferDestination === 'liquidity') {
+                  // Bucket -> Liquidità
+                  await supabase.from('transactions').insert({
+                       user_id: user.id,
+                       amount: Math.abs(amountVal), // Entrata in liquidità (ma tipo transfer)
+                       type: 'transfer',
+                       description: `Prelievo da ${buckets.find(b=>b.id === transferSource)?.name}`,
+                       date: new Date(date).toISOString(),
+                       bucket_id: transferSource 
+                   })
+              } else {
+                  // Bucket -> Bucket
+                  const { data: destBucket } = await supabase.from('buckets').select('current_balance').eq('id', transferDestination).single()
+                  await supabase.from('buckets').update({ current_balance: (destBucket?.current_balance || 0) + amountVal }).eq('id', transferDestination)
+              }
           }
-        }
-      }
-      // 2. Entrata (Income)
-      else if (type === 'income') {
-        const { error: tError } = await supabase.from('transactions').insert({
-            amount: amountNumber,
-            category_id: categoryId,
-            date: new Date(date).toISOString(),
-            description: description || null,
-            is_work_related: false,
-            type: type,
-            user_id: user.id,
-          })
-        if (tError) throw tError
-
-        // Divisione Automatica a CASCATA
-        if (applyAutoSplit) {
-            const bucketsWithDistribution = buckets.filter(b => (b.distribution_percentage || 0) > 0)
-            let allocations = new Map<string, number>()
-            let eligibleBuckets = new Set<string>() 
-            
-            bucketsWithDistribution.forEach(b => {
-                const theoretical = (amountNumber * (b.distribution_percentage || 0)) / 100
-                allocations.set(b.id, theoretical)
-                eligibleBuckets.add(b.id)
-            })
-
-            let loop = true
-            while (loop && eligibleBuckets.size > 0) {
-                loop = false 
-                let excessPool = 0
-
-                for (const bucket of bucketsWithDistribution) {
-                    if (!eligibleBuckets.has(bucket.id)) continue
-                    const currentAlloc = allocations.get(bucket.id) || 0
-                    const target = bucket.target_amount || 0
-                    const startBalance = bucket.current_balance || 0
-                    
-                    if (target > 0) {
-                        const space = Math.max(0, target - startBalance)
-                        if (currentAlloc > space) {
-                            excessPool += (currentAlloc - space)
-                            allocations.set(bucket.id, space)
-                            eligibleBuckets.delete(bucket.id)
-                            loop = true
-                        }
-                    }
-                }
-
-                if (excessPool > 0.01 && eligibleBuckets.size > 0) {
-                    for (const bucket of bucketsWithDistribution) {
-                        if (eligibleBuckets.has(bucket.id)) {
-                            const weight = bucket.distribution_percentage || 0
-                            const share = (excessPool * weight) / 100
-                            allocations.set(bucket.id, (allocations.get(bucket.id) || 0) + share)
-                        }
-                    }
-                    loop = true 
-                }
-            }
-
-            for (const bucket of bucketsWithDistribution) {
-                const finalAmount = allocations.get(bucket.id) || 0
-                if (finalAmount > 0) {
-                    const newBalance = (bucket.current_balance || 0) + finalAmount
-                    let updateData: any = { current_balance: newBalance }
-                    if ((bucket.target_amount || 0) > 0 && newBalance >= (bucket.target_amount || 0)) {
-                       updateData.distribution_percentage = 0
-                    }
-                    await supabase.from('transactions').insert({
-                        amount: -finalAmount,
-                        date: new Date(date).toISOString(),
-                        description: `Distribuzione automatica a ${bucket.name}`,
-                        type: 'transfer',
-                        bucket_id: bucket.id,
-                        user_id: user.id,
-                      })
-                    await supabase.from('buckets').update(updateData).eq('id', bucket.id)
-                }
-            }
-        }
-      }
-      // 3. Trasferimento (Transfer)
-      else if (type === 'transfer') {
-        if (!transferDestination) throw new Error('Seleziona una destinazione')
-        
-        let destName = 'Destinazione'
-        if (transferDestinationType === 'investment') {
-            const inv = investments.find(i => i.id === transferDestination)
-            destName = inv ? inv.type : 'Investimento'
-        } else {
-            if (transferDestination === 'unassigned') destName = 'Liquidità Principale'
-            else {
-               const b = buckets.find(b => b.id === transferDestination)
-               destName = b ? b.name : 'Bucket'
-            }
-        }
-
-        let transactionAmount = 0
-        if (transferSource === 'unassigned') transactionAmount = -amountNumber
-        else if (transferSource !== 'unassigned' && transferDestination === 'unassigned') transactionAmount = amountNumber
-        else transactionAmount = 0
-
-        if (transactionAmount !== 0) {
-            const { error: tError } = await supabase.from('transactions').insert({
-                amount: transactionAmount,
+      } 
+      // --- GESTIONE INCOME / EXPENSE ---
+      else {
+          
+          if (editingId) {
+            // Edit existing
+            await supabase
+                .from('transactions')
+                .update({
+                amount: finalAmount,
+                category_id: categoryId || null,
                 date: new Date(date).toISOString(),
-                description: description || `Trasferimento a ${destName}`,
-                type: 'transfer',
-                bucket_id: transferSource === 'unassigned' ? null : transferSource,
-                investment_id: transferDestinationType === 'investment' ? transferDestination : null,
+                description,
+                type,
+                bucket_id: bucketId || null
+                })
+                .eq('id', editingId)
+          } else {
+            // New Transaction
+            
+            // Se è una spesa da un bucket, scala il bucket
+            if (type === 'expense' && bucketId) {
+                const { data: buck } = await supabase.from('buckets').select('current_balance').eq('id', bucketId).single()
+                if (buck) {
+                    await supabase.from('buckets').update({ current_balance: (buck.current_balance || 0) - amountVal }).eq('id', bucketId)
+                }
+            }
+
+            // Inserisci Transazione Principale
+            const { data: newTx, error: txError } = await supabase
+                .from('transactions')
+                .insert({
                 user_id: user.id,
-              })
-            if (tError) throw tError
-        }
+                amount: finalAmount,
+                category_id: categoryId || null,
+                date: new Date(date).toISOString(),
+                description,
+                type,
+                bucket_id: bucketId || null,
+                is_work_related: false, // Default
+                })
+                .select()
+                .single()
 
-        if (transferSource !== 'unassigned' && transferSource) {
-          const sb = buckets.find(b => b.id === transferSource)
-          if (sb) await supabase.from('buckets').update({ current_balance: (sb.current_balance || 0) - amountNumber }).eq('id', transferSource)
-        }
+            if (txError) throw txError
 
-        if (transferDestinationType === 'investment') {
-          const inv = investments.find(i => i.id === transferDestination)
-          if (inv) await supabase.from('investments').update({ current_value: (inv.current_value || 0) + amountNumber }).eq('id', transferDestination)
-        } else if (transferDestination !== 'unassigned' && transferDestination) {
-          const db = buckets.find(b => b.id === transferDestination)
-          if (db) {
-             const newBalance = (db.current_balance || 0) + amountNumber
-             const target = db.target_amount || 0
-             let updateData: any = { current_balance: newBalance }
-             if (target > 0 && newBalance >= target) {
-                 updateData.distribution_percentage = 0
-             }
-             await supabase.from('buckets').update(updateData).eq('id', transferDestination)
+            // --- LOGICA P.IVA (SOLO INCOME) ---
+            let distributableAmount = amountVal
+
+            if (type === 'income' && isInvoice && taxCalculations && autoSaveTaxes) {
+                // 1. Trova/Crea Bucket Fiscali
+                const inpsBucketId = await getOrCreateBucket(user.id, 'Aliquota INPS')
+                const taxBucketId = await getOrCreateBucket(user.id, 'Aliquota Imposta Sostitutiva')
+
+                // 2. Preleva i soldi (Aggiorna Bucket)
+                const { data: inpsB } = await supabase.from('buckets').select('current_balance').eq('id', inpsBucketId).single()
+                const { data: taxB } = await supabase.from('buckets').select('current_balance').eq('id', taxBucketId).single()
+
+                await supabase.from('buckets').update({ current_balance: (inpsB?.current_balance || 0) + taxCalculations.inps }).eq('id', inpsBucketId)
+                await supabase.from('buckets').update({ current_balance: (taxB?.current_balance || 0) + taxCalculations.tax }).eq('id', taxBucketId)
+
+                // 3. Crea Movimenti Transfer (Uscita dalla liquidità verso bucket)
+                await supabase.from('transactions').insert([
+                    {
+                        user_id: user.id,
+                        amount: -Math.abs(taxCalculations.inps),
+                        type: 'transfer',
+                        description: `Accantonamento INPS (Fattura)`,
+                        date: new Date(date).toISOString(),
+                        bucket_id: inpsBucketId
+                    },
+                    {
+                        user_id: user.id,
+                        amount: -Math.abs(taxCalculations.tax),
+                        type: 'transfer',
+                        description: `Accantonamento Tasse (Fattura)`,
+                        date: new Date(date).toISOString(),
+                        bucket_id: taxBucketId
+                    }
+                ])
+
+                // 4. Aggiorna il netto distribuibile per i risparmi
+                distributableAmount = taxCalculations.net
+            }
+
+            // --- LOGICA AUTO-SPLIT (RISPARMI) ---
+            // Se attiva, usa il netto (se P.IVA applicata) o il lordo (se normale)
+            if (type === 'income' && applyAutoSplit && newTx) {
+                await handleAutoSplitLogic(user.id, distributableAmount, new Date(date).toISOString())
+            }
           }
-        }
       }
 
-      resetForm()
       onSuccess()
       onClose()
     } catch (error: any) {
-      setError(error.message || 'Errore durante il salvataggio')
+      alert(error.message)
     } finally {
       setLoading(false)
     }
@@ -413,7 +418,6 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
   }
 
   return (
-    // FIX: z-index aumentato a z-[100] per coprire la BottomBar
     <div 
         className="fixed inset-0 bg-black/60 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 backdrop-blur-sm animate-in fade-in"
         onClick={onClose}
@@ -423,7 +427,7 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
         onClick={(e) => e.stopPropagation()}
       >
         
-        {/* Header - FISSO */}
+        {/* Header */}
         <div className="shrink-0 bg-white border-b border-gray-100 px-6 py-4 flex items-center justify-between rounded-t-3xl sm:rounded-t-3xl z-10">
           <h2 className="text-lg font-bold text-gray-900">
             {editingId ? 'Modifica' : 'Nuova Transazione'}
@@ -433,11 +437,10 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
           </button>
         </div>
 
-        {/* Content - SCROLLABILE INDIPENDENTEMENTE */}
+        {/* Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
             <form id="transaction-form" onSubmit={handleSubmit} className="space-y-6">
-            {error && <div className="p-3 bg-red-50 text-red-600 text-sm rounded-xl">{error}</div>}
-
+            
             {/* Type Selector */}
             <div className="grid grid-cols-3 gap-2">
                 <button type="button" onClick={() => setType('expense')} className={cn("flex flex-col items-center justify-center py-3 rounded-2xl border-2 transition-all gap-1", getActiveTabClass('expense'))}>
@@ -454,7 +457,7 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                 </button>
             </div>
 
-            {/* Amount Hero */}
+            {/* Amount */}
             <div className="relative">
                 <label className="text-xs font-bold text-gray-400 uppercase ml-1 mb-1 block">Importo</label>
                 <div className="relative flex items-center">
@@ -467,13 +470,13 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                     onChange={(e) => setAmount(e.target.value)}
                     className="w-full pl-10 pr-4 py-4 text-4xl font-bold text-gray-900 bg-gray-50 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all placeholder:text-gray-200"
                     placeholder="0.00"
-                    // autoFocus rimosso come richiesto
+                    required
                     />
                 </div>
             </div>
 
             <div className="space-y-4">
-                {/* Category */}
+                {/* Category (Filtered by Type & Improved Visual) */}
                 {type !== 'transfer' && (
                 <div>
                     <label className="text-xs font-bold text-gray-400 uppercase ml-1 mb-1 block">Categoria</label>
@@ -485,13 +488,23 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                             required
                             className="w-full pl-12 pr-4 py-3.5 bg-gray-50 text-gray-900 font-medium rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white appearance-none"
                         >
-                            {filteredCategoryTree.length === 0 ? (
-                            <option value="">Caricamento...</option>
-                            ) : (
-                            flattenCategories(filteredCategoryTree).map((cat) => (
-                                <option key={cat.id} value={cat.id}>{cat.name}</option>
-                            ))
-                            )}
+                            <option value="">Seleziona...</option>
+                            {/* FIX: Filtraggio per tipo e rimozione OptGroup */}
+                            {categories
+                                .filter(cat => cat.type === type)
+                                .map((cat) => (
+                                    <>
+                                        <option key={cat.id} value={cat.id} className="font-bold text-black">
+                                            {cat.name}
+                                        </option>
+                                        {cat.children?.map(child => (
+                                            <option key={child.id} value={child.id}>
+                                                &nbsp;&nbsp;&nbsp;&nbsp;{child.name}
+                                            </option>
+                                        ))}
+                                    </>
+                                ))
+                            }
                         </select>
                     </div>
                 </div>
@@ -508,8 +521,8 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                                 className="w-full px-4 py-3 bg-white text-gray-900 font-medium rounded-xl border-none outline-none focus:ring-2 focus:ring-blue-500"
                             >
                                 <option value="">Seleziona...</option>
-                                <option value="unassigned">Liquidità Principale</option>
-                                {buckets.map(b => <option key={b.id} value={b.id}>{b.name} (€{b.current_balance})</option>)}
+                                <option value="liquidity">Liquidità (Conto Corrente)</option>
+                                {buckets.map(b => <option key={b.id} value={b.id}>Salv.: {b.name} (€{b.current_balance})</option>)}
                             </select>
                         </div>
                         
@@ -520,10 +533,6 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                         </div>
 
                         <div>
-                            <div className="flex gap-2 mb-2">
-                                <button type="button" onClick={() => setTransferDestinationType('investment')} className={cn("flex-1 text-xs py-1.5 rounded-lg font-bold transition-all", transferDestinationType === 'investment' ? "bg-blue-600 text-white shadow-md" : "bg-white text-gray-500")}>Investimento</button>
-                                <button type="button" onClick={() => setTransferDestinationType('bucket')} className={cn("flex-1 text-xs py-1.5 rounded-lg font-bold transition-all", transferDestinationType === 'bucket' ? "bg-blue-600 text-white shadow-md" : "bg-white text-gray-500")}>Altro Bucket</button>
-                            </div>
                             <label className="text-xs font-bold text-blue-400 uppercase ml-1 mb-1 block">Verso (Destinazione)</label>
                             <select
                                 value={transferDestination}
@@ -531,14 +540,8 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                                 className="w-full px-4 py-3 bg-white text-gray-900 font-medium rounded-xl border-none outline-none focus:ring-2 focus:ring-blue-500"
                             >
                                 <option value="">Seleziona...</option>
-                                {transferDestinationType === 'investment' ? (
-                                    investments.map(i => <option key={i.id} value={i.id}>{i.type} (€{i.current_value})</option>)
-                                ) : (
-                                    <>
-                                        <option value="unassigned">Liquidità Principale</option>
-                                        {buckets.filter(b => b.id !== transferSource).map(b => <option key={b.id} value={b.id}>{b.name} (€{b.current_balance})</option>)}
-                                    </>
-                                )}
+                                {transferSource !== 'liquidity' && <option value="liquidity">Liquidità (Conto Corrente)</option>}
+                                {buckets.filter(b => b.id !== transferSource).map(b => <option key={b.id} value={b.id}>Salv.: {b.name} (€{b.current_balance})</option>)}
                             </select>
                         </div>
                     </div>
@@ -549,7 +552,7 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                     <label className="text-xs font-bold text-gray-400 uppercase ml-1 mb-1 block">Data</label>
                     <div className="relative">
                         <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full pl-12 pr-4 py-3.5 bg-gray-50 text-gray-900 font-medium rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white" />
+                        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full pl-12 pr-4 py-3.5 bg-gray-50 text-gray-900 font-medium rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white" required />
                     </div>
                 </div>
 
@@ -568,78 +571,111 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                 </div>
                 </div>
 
-                {/* EXPENSE: Bucket Selector */}
-                {type === 'expense' && (
-                <div>
-                    <label className="text-xs font-bold text-gray-400 uppercase ml-1 mb-1 block">Paga da Salvadanaio (Opzionale)</label>
-                    <div className="relative">
-                        <Wallet className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                        <select
-                            value={bucketId}
-                            onChange={(e) => setBucketId(e.target.value)}
-                            className="w-full pl-12 pr-4 py-3.5 bg-gray-50 text-gray-900 font-medium rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all appearance-none"
-                        >
-                            <option value="">Liquidità Principale</option>
-                            {buckets.map(b => <option key={b.id} value={b.id}>{b.name} (€{b.current_balance})</option>)}
-                        </select>
-                    </div>
-                </div>
-                )}
+                {/* --- SEZIONE P.IVA (SOLO INCOME) --- */}
+                {type === 'income' && taxProfile && (
+                    <div className="animate-in fade-in slide-in-from-top-2 space-y-4">
+                        <div className="flex items-center justify-between bg-purple-50 p-3 rounded-xl border border-purple-100">
+                            <div className="flex items-center gap-3">
+                                <div className="p-2 bg-white rounded-lg text-purple-600 shadow-sm">
+                                    <Briefcase className="w-4 h-4" />
+                                </div>
+                                <div>
+                                    <p className="text-sm font-bold text-purple-900">Fattura P.IVA</p>
+                                    <p className="text-[10px] text-purple-600">Calcola imposte forfettarie</p>
+                                </div>
+                            </div>
+                            <label className="relative inline-flex items-center cursor-pointer">
+                                <input 
+                                    type="checkbox" 
+                                    className="sr-only peer" 
+                                    checked={isInvoice} 
+                                    onChange={() => setIsInvoice(!isInvoice)} 
+                                />
+                                <div className="w-11 h-6 bg-purple-200 peer-focus:outline-none rounded-full peer peer-checked:bg-purple-600 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all"></div>
+                            </label>
+                        </div>
 
-                {/* Auto Split Switch & Related Distributions */}
-                {type === 'income' && (
-                    <>
-                        {/* Selettore Auto Distribuzione (solo se nuova o non ci sono distribuzioni già fatte) */}
-                        {buckets.some(b => (b.distribution_percentage || 0) > 0) && relatedDistributions.length === 0 && (
-                            <label className="flex items-center justify-between p-4 bg-gray-50 rounded-2xl cursor-pointer border border-transparent hover:border-gray-200 transition-all">
-                                <div className="flex items-center gap-3">
-                                    <div className="p-2 bg-indigo-100 text-indigo-600 rounded-lg">
-                                        <Repeat className="w-5 h-5" />
+                        {isInvoice && taxCalculations && (
+                            <div className="bg-white border-2 border-purple-100 rounded-2xl p-4 space-y-3 shadow-sm animate-in zoom-in-95">
+                                <div className="flex justify-between items-center pb-2 border-b border-gray-50">
+                                    <span className="text-xs text-gray-500">Imponibile ({taxProfile.tax_profitability_coeff}%)</span>
+                                    <span className="font-bold text-gray-700">{formatCurrency(taxCalculations.taxable)}</span>
+                                </div>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <span className="text-[10px] uppercase font-bold text-gray-400 block mb-1">INPS ({taxProfile.tax_inps_rate}%)</span>
+                                        <span className="text-sm font-bold text-rose-500 block">-{formatCurrency(taxCalculations.inps)}</span>
                                     </div>
                                     <div>
-                                        <span className="font-bold text-gray-700 text-sm block">Divisione Automatica Salvadanai</span>
-                                        <span className="text-xs text-gray-400">Distribuisce in base alle % impostate</span>
+                                        <span className="text-[10px] uppercase font-bold text-gray-400 block mb-1">Tasse ({taxProfile.tax_flat_rate}%)</span>
+                                        <span className="text-sm font-bold text-rose-500 block">-{formatCurrency(taxCalculations.tax)}</span>
                                     </div>
                                 </div>
-                                <input type="checkbox" checked={applyAutoSplit} onChange={(e) => setApplyAutoSplit(e.target.checked)} className="w-6 h-6 rounded-md text-blue-600 focus:ring-blue-500 border-gray-300" />
-                            </label>
-                        )}
+                                <div className="pt-2 border-t border-purple-50 flex justify-between items-end">
+                                    <span className="text-xs font-bold text-purple-600 uppercase">Netto Reale</span>
+                                    <span className="text-xl font-black text-purple-700">{formatCurrency(taxCalculations.net)}</span>
+                                </div>
 
-                        {/* Lista Distribuzioni Correlate (VISIBILE SOLO SE ESISTONO) */}
-                        {relatedDistributions.length > 0 && (
-                            <div className="mt-4 p-4 bg-gray-50 rounded-2xl border border-gray-100">
-                                <h4 className="text-xs font-bold text-gray-500 uppercase mb-3 flex items-center gap-1">
-                                    <ArrowRightLeft className="w-3 h-3" /> Distribuzioni Collegate
-                                </h4>
-                                <div className="space-y-2">
-                                    {relatedDistributions.map(dist => (
-                                        <div key={dist.id} className="flex justify-between items-center p-3 bg-white rounded-xl border border-gray-100 shadow-sm">
-                                            <div className="flex items-center gap-3 min-w-0 flex-1">
-                                                <div className="p-2 bg-blue-50 text-blue-600 rounded-lg shrink-0">
-                                                    <PiggyBank className="w-4 h-4" />
-                                                </div>
-                                                <div className="flex flex-col">
-                                                    <span className="text-[10px] text-gray-400 font-bold uppercase leading-none mb-0.5">Verso</span>
-                                                    <span className="text-sm font-bold text-gray-900 leading-snug">
-                                                        {dist.description?.replace('Distribuzione automatica a ', '')}
-                                                    </span>
-                                                </div>
-                                            </div>
-                                            <span className="font-bold text-gray-900 ml-3 whitespace-nowrap">
-                                                {formatCurrency(Math.abs(dist.amount))}
-                                            </span>
-                                        </div>
-                                    ))}
+                                <div className="flex items-center gap-2 mt-2 pt-2">
+                                    <input 
+                                        type="checkbox" 
+                                        id="auto-tax" 
+                                        checked={autoSaveTaxes} 
+                                        onChange={(e) => setAutoSaveTaxes(e.target.checked)}
+                                        className="w-4 h-4 rounded text-purple-600 focus:ring-purple-500 border-gray-300"
+                                    />
+                                    <label htmlFor="auto-tax" className="text-xs text-gray-600">
+                                        Accantona automaticamente INPS e Tasse nei salvadanai
+                                    </label>
                                 </div>
                             </div>
                         )}
-                    </>
+                    </div>
+                )}
+
+                {/* EXPENSE: Bucket Selector */}
+                {type === 'expense' && !editingId && buckets.length > 0 && (
+                    <div className="flex items-center gap-3 p-3 rounded-xl bg-gray-50 border border-gray-100">
+                        <PieChart className="w-5 h-5 text-gray-400" />
+                        <div className="flex-1">
+                            <label className="text-xs font-bold text-gray-700 block">Preleva da Salvadanaio</label>
+                            <select
+                                value={bucketId}
+                                onChange={(e) => setBucketId(e.target.value)}
+                                className="w-full mt-1 bg-transparent text-sm text-gray-600 outline-none"
+                            >
+                                <option value="">Nessuno (Usa Liquidità)</option>
+                                {buckets.map((b) => (
+                                    <option key={b.id} value={b.id}>{b.name} ({formatCurrency(b.current_balance || 0)})</option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
+                )}
+
+                {/* Auto Split Switch: FILTRO AGGIUNTO */}
+                {type === 'income' && !editingId && buckets.some(b => b.distribution_percentage > 0 && !['Aliquota INPS', 'Aliquota Imposta Sostitutiva'].includes(b.name)) && (
+                    <div className="flex items-center justify-between p-3 rounded-xl bg-blue-50 border border-blue-100">
+                        <div className="flex items-center gap-3">
+                            <PiggyBank className="w-5 h-5 text-blue-600" />
+                            <div>
+                                <p className="text-xs font-bold text-blue-900">Divisione Automatica</p>
+                                <p className="text-[10px] text-blue-600">
+                                    Distribuisci {isInvoice ? 'il netto' : 'il totale'} nei salvadanai
+                                </p>
+                            </div>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" className="sr-only peer" checked={applyAutoSplit} onChange={() => setApplyAutoSplit(!applyAutoSplit)} />
+                            <div className="w-9 h-5 bg-blue-200 peer-focus:outline-none rounded-full peer peer-checked:bg-blue-600 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all"></div>
+                        </label>
+                    </div>
                 )}
             </div>
             </form>
         </div>
 
-        {/* Footer Actions - FISSO IN BASSO */}
+        {/* Footer Actions */}
         <div className="shrink-0 p-6 border-t border-gray-100 bg-white rounded-b-3xl sm:rounded-b-3xl">
             <button
                 type="submit"

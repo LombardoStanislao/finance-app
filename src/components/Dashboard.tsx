@@ -66,12 +66,13 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
       setCategories(categoriesList)
 
       // FILTRO LISTA: Visualizziamo tutto nella lista recente per chiarezza
+      // Filtriamo solo le distribuzioni automatiche per non intasare la home
       const filteredRecent = transactions.filter(t => 
         !t.description?.startsWith('Distribuzione automatica')
       )
       setRecentTransactions(filteredRecent.slice(0, 5))
 
-      // 2. Calcoli Liquidità (Include TUTTO, anche P&L trading perché sono soldi veri sul conto)
+      // 2. Calcoli Liquidità (Include TUTTO)
       const totalLiquidity = transactions.reduce((sum, t) => sum + (Number(t.amount) || 0), 0)
       setLiquidity(totalLiquidity)
 
@@ -81,7 +82,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
       setInvestmentsTotal(totalInvestments)
       setNetWorth(totalLiquidity + totalBuckets + totalInvestments)
 
-      // 4. Mese Corrente (QUI FILTRIAMO IL TRADING P&L)
+      // 4. Mese Corrente
       const now = new Date()
       const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
       const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59).toISOString()
@@ -91,8 +92,6 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
 
       transactions.forEach(t => {
         const d = new Date(t.date).toISOString()
-        // Se è una transazione di investimento (P&L realizzato), NON la contiamo nel flusso di cassa mensile "operativo"
-        // Questo evita che una grossa vendita in perdita sembri una "spesa folle" nel grafico mensile
         const isTradingPL = t.investment_id !== null && (t.type === 'income' || t.type === 'expense')
 
         if (d >= monthStart && d <= monthEnd && !isTradingPL) {
@@ -104,7 +103,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
       setMonthIncome(mIncome)
       setMonthExpenses(mExpenses)
 
-      // 5. Calcolo Budget (Filtriamo anche qui il trading P&L)
+      // 5. Calcolo Budget
       const categoriesWithBudget = categoriesList.filter(c => c.budget_limit && c.budget_limit > 0)
       const budgetsData: BudgetProgress[] = []
 
@@ -114,7 +113,6 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
             const d = new Date(t.date).toISOString()
             const isTradingPL = t.investment_id !== null
             
-            // Contiamo solo le spese vere, non le minusvalenze di trading
             if (t.type === 'expense' && t.category_id && d >= monthStart && d <= monthEnd && !isTradingPL) {
                 const current = expensesByCat.get(t.category_id) || 0
                 expensesByCat.set(t.category_id, current + Math.abs(Number(t.amount)))
@@ -142,30 +140,37 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
     }
   }
 
-  // --- LOGICA DI ROLLBACK ---
+  // --- LOGICA DI ROLLBACK & PROTEZIONE ---
   async function handleDeleteTransaction(transaction: Transaction, e: React.MouseEvent) {
     e.stopPropagation()
+
+    // 1. BLOCCO SICUREZZA P.IVA (Come in Transactions.tsx)
+    if (transaction.type === 'transfer' && transaction.bucket_id) {
+        const { data: bucketCheck } = await supabase
+            .from('buckets')
+            .select('name')
+            .eq('id', transaction.bucket_id)
+            .single()
+        
+        if (bucketCheck && ['Aliquota INPS', 'Aliquota Imposta Sostitutiva'].includes(bucketCheck.name)) {
+            alert("🚫 AZIONE BLOCCATA\n\nNon puoi eliminare manualmente un singolo accantonamento fiscale.\n\nPer annullare questa operazione, devi eliminare la transazione di Entrata (Fattura) originale che l'ha generato.")
+            return
+        }
+    }
+
     if (!window.confirm('Eliminare questa transazione? L\'operazione annullerà anche eventuali movimenti collegati.')) return
 
     try {
         const { data: { user } } = await supabase.auth.getUser()
         if(!user) return
 
-        // 1. CASO INVESTIMENTO (ACQUISTO o VENDITA)
+        // 2. CASO INVESTIMENTO
         if (transaction.investment_id) {
              const { data: investment } = await supabase.from('investments').select('*').eq('id', transaction.investment_id).single()
              if (investment) {
-                 // Recuperiamo la quantità di quote movimentata (salvata in asset_quantity)
                  const qtyChange = (transaction as any).asset_quantity || 0 
-                 
-                 // Ripristiniamo la quantità: 
-                 // Se era acquisto (+qty), dobbiamo togliere -> new = curr - qty
-                 // Se era vendita (-qty), dobbiamo aggiungere -> new = curr - (-qty) = curr + qty
                  const newQty = Math.max(0, (investment.quantity || 0) - qtyChange)
                  
-                 // Ripristiniamo il capitale investito (Solo per i Transfer):
-                 // Se era acquisto (amount < 0), invested era aumentato. Ora deve scendere (+ amount negativo)
-                 // Se era vendita (amount > 0), invested era sceso. Ora deve salire (+ amount positivo)
                  let deltaInvested = 0
                  if (transaction.type === 'transfer') {
                      deltaInvested = transaction.amount 
@@ -173,7 +178,6 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                  
                  const newInvested = Math.max(0, (investment.invested_amount || 0) + deltaInvested)
                  
-                 // Ricalcolo valore corrente stimato
                  let newCurrentValue = investment.current_value
                  if ((investment.quantity || 0) > 0) {
                      const price = investment.current_value / investment.quantity
@@ -188,11 +192,13 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
              }
         }
 
-        // 2. CASO ENTRATA (Distribuzione automatica bucket)
+        // 3. CASO ENTRATA (Distribuzione Auto & P.IVA)
         if (transaction.type === 'income') {
             const txTime = new Date(transaction.created_at).getTime()
-            const timeStart = new Date(txTime - 2000).toISOString()
+            const timeStart = new Date(txTime - 5000).toISOString()
             const timeEnd = new Date(txTime + 5000).toISOString()
+            
+            // A. Rollback Distribuzioni Automatiche
             const { data: children } = await supabase.from('transactions').select('*').eq('user_id', user.id).eq('type', 'transfer').ilike('description', 'Distribuzione automatica%').gte('created_at', timeStart).lte('created_at', timeEnd)
             if (children) {
                 for (const child of children) {
@@ -203,8 +209,23 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                     await supabase.from('transactions').delete().eq('id', child.id)
                 }
             }
+
+            // B. Rollback Accantonamenti Tasse (P.IVA)
+            const { data: taxChildren } = await supabase.from('transactions').select('*').eq('user_id', user.id).eq('type', 'transfer').ilike('description', 'Accantonamento % (Fattura)').gte('created_at', timeStart).lte('created_at', timeEnd)
+            if (taxChildren) {
+                for (const child of taxChildren) {
+                    if (child.bucket_id) {
+                        const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', child.bucket_id).single()
+                        if (bucket) {
+                            const newBalance = Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount))
+                            await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', child.bucket_id)
+                        }
+                    }
+                    await supabase.from('transactions').delete().eq('id', child.id)
+                }
+            }
         } 
-        // 3. CASO SPESA DA BUCKET (Restituzione fondi)
+        // 4. CASO SPESA DA BUCKET
         else if ((transaction.type === 'expense' || transaction.type === 'transfer') && transaction.bucket_id) {
             const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', transaction.bucket_id).single()
             if (bucket) await supabase.from('buckets').update({ current_balance: (bucket.current_balance || 0) + Math.abs(transaction.amount) }).eq('id', transaction.bucket_id)

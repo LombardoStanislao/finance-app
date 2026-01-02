@@ -60,7 +60,11 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
     { type: 'Altro', label: 'Altro', icon: Box, color: 'text-gray-600', bg: 'bg-gray-50' },
   ] as const
 
+  // Arrotondamento valuta (2 decimali)
   const round2 = (num: number) => Math.round((num + Number.EPSILON) * 100) / 100
+  
+  // NUOVO: Arrotondamento Quote (6 decimali per supportare frazionati)
+  const roundQty = (num: number) => Math.round((num + Number.EPSILON) * 1000000) / 1000000
 
   // --- CALCOLI DERIVATI ---
   const moneyVal = parseFloat(formTotalSpent) || 0
@@ -74,7 +78,7 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
   const sellNetDetails = (() => {
       if (operationMode !== 'sell' || !selectedInvestment) return { realizedPL: 0, capitalRepaid: 0 }
       const currentPMC = (selectedInvestment.invested_amount || 0) / (selectedInvestment.quantity || 1)
-      const costBasis = round2(currentPMC * qtyVal) 
+      const costBasis = round2(currentPMC * qtyVal) // Qui usiamo round2 perché sono Soldi
       const netProceeds = round2(moneyVal - feesVal) 
       const realizedPL = round2(netProceeds - costBasis)
       return { realizedPL, capitalRepaid: costBasis }
@@ -199,7 +203,10 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
 
       const isAutomated = supportsAutomation && !isManual
       
-      const qty = round2(parseFloat(formQuantity) || 0)
+      // FIX: Usa roundQty per la quantità (6 decimali)
+      const qty = roundQty(parseFloat(formQuantity) || 0)
+      
+      // Usa round2 per i soldi (2 decimali)
       const totalMoney = round2(parseFloat(formTotalSpent) || 0)
       const fees = round2(Math.max(0, parseFloat(formFees) || 0)) 
       
@@ -271,7 +278,8 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
               const { data: currentAsset } = await supabase.from('investments').select('*').eq('id', targetInvestmentId).single()
               if (!currentAsset) throw new Error('Asset non trovato')
 
-              const newTotalQty = round2((currentAsset.quantity || 0) + qty)
+              // FIX: Usa roundQty per la somma quote
+              const newTotalQty = roundQty((currentAsset.quantity || 0) + qty)
               const newTotalInvested = round2((currentAsset.invested_amount || 0) + netInvestedAmount)
               
               let newCurrentVal = 0
@@ -305,14 +313,13 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
                   })
               }
               if (fees > 0) {
-                  // Ottieni o crea la categoria "Commissioni Investimenti"
                   const commCatId = await getOrCreateCommissionCategory(user.id)
 
                   await supabase.from('transactions').insert({
                       user_id: user.id,
                       amount: -Math.abs(fees),
                       type: 'expense', 
-                      category_id: commCatId, // Assegna la categoria
+                      category_id: commCatId, 
                       description: `Commissioni: ${formName || finalTicker}`,
                       date: new Date().toISOString(),
                       is_work_related: false,
@@ -326,7 +333,8 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
 
           const { realizedPL, capitalRepaid } = sellNetDetails
           
-          const newQty = round2(selectedInvestment.quantity! - qty)
+          // FIX: Usa roundQty per la sottrazione quote
+          const newQty = roundQty(selectedInvestment.quantity! - qty)
           const newInvested = round2(selectedInvestment.invested_amount! - capitalRepaid)
           
           let newCurrentVal = 0
@@ -386,12 +394,14 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
       if (!selectedInvestment) return
 
       try {
+          // FIX: roundQty
           const qtyChange = (tx as any).asset_quantity || 0 
           
           const currentQty = selectedInvestment.quantity || 0
           const currentInvested = selectedInvestment.invested_amount || 0
 
-          const newQty = round2(currentQty - qtyChange) 
+          // FIX: roundQty anche nel rollback
+          const newQty = roundQty(currentQty - qtyChange) 
           
           let deltaInvested = 0
           if (tx.type === 'transfer') {

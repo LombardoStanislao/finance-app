@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { ArrowLeft, Plus, Trash2, X, Target, PiggyBank, PenLine, Settings, CheckCircle2, AlertTriangle, ArrowUpDown, Lock } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, X, Target, PiggyBank, PenLine, Settings, CheckCircle2, AlertTriangle, ArrowUpDown, Lock, Briefcase } from 'lucide-react'
 import { supabase, type Bucket } from '../lib/supabase'
 import { formatCurrency, cn } from '../lib/utils'
 
@@ -16,6 +16,9 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
   const [loading, setLoading] = useState(true)
   const [sortBy, setSortBy] = useState<SortOption>('default')
   const [isSortMenuOpen, setIsSortMenuOpen] = useState(false)
+  
+  // P.IVA State
+  const [isProTax, setIsProTax] = useState(false)
   
   // Error State
   const [error, setError] = useState<string | null>(null)
@@ -37,22 +40,93 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
   const [isAddFormOpen, setIsAddFormOpen] = useState(false)
 
   useEffect(() => {
-    loadBuckets()
+    loadProfileAndBuckets()
   }, [])
 
-  async function loadBuckets() {
+  async function loadProfileAndBuckets() {
     try {
+      setLoading(true)
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
 
-      const { data, error } = await supabase
-        .from('buckets')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: true }) // Default order
+      // 1. Carica Profilo
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('is_pro_tax')
+        .eq('id', user.id)
+        .maybeSingle()
+      
+      const isUserPro = profile?.is_pro_tax || false
+      setIsProTax(isUserPro)
 
-      if (error) throw error
-      setBuckets(data || [])
+      // Funzione helper per scaricare i bucket
+      const fetchBuckets = async () => {
+          const { data, error } = await supabase
+            .from('buckets')
+            .select('*')
+            .eq('user_id', user.id)
+            .order('created_at', { ascending: true })
+          if (error) throw error
+          return data || []
+      }
+
+      // Funzione helper per sanificare (creare mancanti / eliminare doppi)
+      const sanitizeTaxBuckets = async (currentList: Bucket[]) => {
+          if (!isUserPro) return false
+          
+          const taxBucketsNeeded = ['Aliquota INPS', 'Aliquota Imposta Sostitutiva']
+          let dbModified = false
+
+          for (const name of taxBucketsNeeded) {
+              const matches = currentList.filter(b => b.name === name)
+
+              // A. CANCELLA DOPPIONI
+              if (matches.length > 1) {
+                  matches.sort((a, b) => {
+                      const scoreA = (a.distribution_percentage || 0) + (a.current_balance || 0)
+                      const scoreB = (b.distribution_percentage || 0) + (b.current_balance || 0)
+                      return scoreB - scoreA
+                  })
+                  const toDelete = matches.slice(1)
+                  for (const del of toDelete) {
+                      await supabase.from('buckets').delete().eq('id', del.id)
+                  }
+                  dbModified = true
+              }
+
+              // B. CREA MANCANTE
+              if (matches.length === 0) {
+                  await supabase.from('buckets').insert({
+                      user_id: user.id,
+                      name: name,
+                      distribution_percentage: 0,
+                      current_balance: 0,
+                      target_amount: 0
+                  })
+                  dbModified = true
+              }
+          }
+          return dbModified
+      }
+
+      // 2. Primo Fetch
+      let currentBuckets = await fetchBuckets()
+
+      // 3. Logica di Sanificazione (Double Pass per sicurezza)
+      if (isUserPro) {
+          const changed = await sanitizeTaxBuckets(currentBuckets)
+          
+          if (changed) {
+              currentBuckets = await fetchBuckets()
+              // Secondo passaggio di sicurezza
+              const doubleCheckChanged = await sanitizeTaxBuckets(currentBuckets)
+              if (doubleCheckChanged) {
+                  currentBuckets = await fetchBuckets()
+              }
+          }
+      }
+
+      setBuckets(currentBuckets)
     } catch (error) {
       console.error('Error loading buckets:', error)
     } finally {
@@ -61,10 +135,9 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
   }
 
   // --- LOGICA ORDINAMENTO E SEPARAZIONE ---
-  const { activeBuckets, completedBuckets } = useMemo(() => {
+  const { activeBuckets, completedBuckets, taxBuckets } = useMemo(() => {
     let sorted = [...buckets]
 
-    // Applicazione Ordinamento
     if (sortBy === 'name') {
         sorted.sort((a, b) => a.name.localeCompare(b.name))
     } else if (sortBy === 'progress-desc' || sortBy === 'progress-asc') {
@@ -78,23 +151,28 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
             return sortBy === 'progress-desc' ? progB - progA : progA - progB
         })
     }
-    // 'default' usa l'ordine originale dell'array (created_at)
 
-    // Separazione: Completati vs Attivi
     const completed: Bucket[] = []
     const active: Bucket[] = []
+    const taxes: Bucket[] = []
+
+    const taxNames = ['Aliquota INPS', 'Aliquota Imposta Sostitutiva']
 
     sorted.forEach(b => {
+        if (isProTax && taxNames.includes(b.name)) {
+            taxes.push(b)
+            return
+        }
+
         const isCompleted = (b.target_amount || 0) > 0 && (b.current_balance || 0) >= (b.target_amount || 0)
         if (isCompleted) completed.push(b)
         else active.push(b)
     })
 
-    return { activeBuckets: active, completedBuckets: completed }
-  }, [buckets, sortBy])
+    return { activeBuckets: active, completedBuckets: completed, taxBuckets: taxes }
+  }, [buckets, sortBy, isProTax])
 
 
-  // Calcola il totale attuale (su tutti i bucket, attivi e completati)
   const totalDistributionPercentage = buckets.reduce((sum, bucket) => {
     return sum + (bucket.distribution_percentage || 0)
   }, 0)
@@ -104,8 +182,9 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
     setError(null)
     
     const newPercentage = newBucketDistribution ? parseFloat(newBucketDistribution) : 0
-    if (totalDistributionPercentage + newPercentage > 100) {
-        setError(`Errore: Stai superando il 100% (Totale attuale: ${totalDistributionPercentage}%)`)
+    
+    if (totalDistributionPercentage + newPercentage > 100.001) {
+        setError(`Errore: Stai superando il 100% (Totale attuale: ${totalDistributionPercentage.toFixed(2)}%)`)
         return
     }
 
@@ -132,7 +211,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
       setNewBucketBalance('')
       setNewBucketTarget('')
       setIsAddFormOpen(false)
-      loadBuckets()
+      loadProfileAndBuckets()
     } catch (error) {
       console.error('Errore salvataggio:', error)
       setError('Errore durante il salvataggio')
@@ -146,13 +225,20 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
     if (!editingBucket) return
     setError(null)
 
-    const newPercentage = editBucketDistribution ? parseFloat(editBucketDistribution) : 0
+    // CHECK AGGIUNTIVO SERVER SIDE
+    const isSystemBucket = isProTax && ['Aliquota INPS', 'Aliquota Imposta Sostitutiva'].includes(editingBucket.name)
+    
+    // Se è di sistema, forziamo il nome originale e la percentuale originale
+    const finalName = isSystemBucket ? editingBucket.name : editBucketName
+    const finalDistribution = isSystemBucket ? editingBucket.distribution_percentage : (editBucketDistribution ? parseFloat(editBucketDistribution) : 0)
+
+    const newPercentage = finalDistribution
     const otherBucketsTotal = buckets
         .filter(b => b.id !== editingBucket.id)
         .reduce((sum, b) => sum + (b.distribution_percentage || 0), 0)
 
-    if (otherBucketsTotal + newPercentage > 100) {
-        setError(`Errore: Il totale supererebbe il 100% (Disponibile: ${(100 - otherBucketsTotal).toFixed(1)}%)`)
+    if (otherBucketsTotal + newPercentage > 100.001) {
+        setError(`Errore: Il totale supererebbe il 100% (Disponibile: ${(100 - otherBucketsTotal).toFixed(2)}%)`)
         return
     }
 
@@ -162,7 +248,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
       const { error } = await supabase
         .from('buckets')
         .update({
-          name: editBucketName,
+          name: finalName,
           distribution_percentage: newPercentage,
           current_balance: editBucketBalance ? parseFloat(editBucketBalance) : 0,
           target_amount: editBucketTarget ? parseFloat(editBucketTarget) : 0,
@@ -172,7 +258,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
       if (error) throw error
 
       setEditingBucket(null)
-      loadBuckets()
+      loadProfileAndBuckets()
     } catch (error) {
       console.error('Errore aggiornamento:', error)
       setError('Errore durante l\'aggiornamento')
@@ -184,6 +270,12 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
   async function handleDeleteBucket(bucketId: string) {
     const bucketToDelete = buckets.find(b => b.id === bucketId)
     
+    // Protezione extra per i bucket fiscali
+    if (isProTax && (bucketToDelete?.name === 'Aliquota INPS' || bucketToDelete?.name === 'Aliquota Imposta Sostitutiva')) {
+        alert('Questo salvadanaio è gestito automaticamente dal profilo P.IVA e non può essere eliminato manualmente.')
+        return
+    }
+
     if (bucketToDelete && (bucketToDelete.current_balance || 0) > 0) {
       alert('Impossibile eliminare: Il salvadanaio contiene ancora del denaro. Per favore svuotalo prima.')
       return 
@@ -196,7 +288,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
       if (unlinkError) throw unlinkError
       const { error } = await supabase.from('buckets').delete().eq('id', bucketId)
       if (error) throw error
-      loadBuckets()
+      loadProfileAndBuckets()
     } catch (error) {
       console.error('Error deleting bucket:', error)
       alert('Impossibile eliminare il salvadanaio. Riprova.')
@@ -204,21 +296,25 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
   }
 
   // Componente Renderizzato per singolo Bucket
-  const BucketCard = ({ bucket, completed = false }: { bucket: Bucket, completed?: boolean }) => {
+  const BucketCard = ({ bucket, completed = false, isTax = false }: { bucket: Bucket, completed?: boolean, isTax?: boolean }) => {
     const target = bucket.target_amount || 0
     const progress = target > 0 ? Math.min((bucket.current_balance || 0) / target * 100, 100) : 0
     
+    const cardBg = isTax ? "bg-purple-50/40 border-purple-100" : completed ? "bg-emerald-50/30 border-emerald-100" : "bg-white border-gray-100"
+    
     return (
-        <div className={cn("bg-white p-4 rounded-xl shadow-sm border transition-transform active:scale-[0.99]", completed ? "border-emerald-100 bg-emerald-50/30" : "border-gray-100")}>
+        <div className={cn("p-4 rounded-xl shadow-sm border transition-transform active:scale-[0.99]", cardBg)}>
             <div className="flex items-center justify-between mb-3">
                 <div className="flex-1 min-w-0 pr-4">
-                    <h3 className={cn("font-bold text-lg leading-tight break-words flex items-center gap-2", completed ? "text-emerald-800" : "text-gray-900")}>
+                    <h3 className={cn("font-bold text-lg leading-tight break-words flex items-center gap-2", completed ? "text-emerald-800" : isTax ? "text-purple-900" : "text-gray-900")}>
+                        {isTax && <Briefcase className="w-4 h-4 text-purple-600 flex-shrink-0" />}
                         {bucket.name}
                         {completed && <CheckCircle2 className="w-4 h-4 text-emerald-500 flex-shrink-0" />}
                     </h3>
                     <div className="flex items-center gap-2 mt-1.5">
                         <p className="text-xs text-gray-400 font-medium">Saldo attuale</p>
-                        {bucket.distribution_percentage > 0 && !completed && (
+                        {/* Mostra % solo se non è un bucket fiscale (che ha sempre 0% visuale) o se ha valore */}
+                        {bucket.distribution_percentage > 0 && !completed && !isTax && (
                             <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[10px] rounded-md font-bold uppercase tracking-wide whitespace-nowrap">
                             {bucket.distribution_percentage}%
                             </span>
@@ -232,7 +328,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
                     <div className="text-right">
-                        <span className={cn("font-bold text-lg whitespace-nowrap block", completed ? "text-emerald-700" : "text-gray-900")}>
+                        <span className={cn("font-bold text-lg whitespace-nowrap block", completed ? "text-emerald-700" : isTax ? "text-purple-700" : "text-gray-900")}>
                             {formatCurrency(bucket.current_balance || 0)}
                         </span>
                         {target > 0 && (
@@ -255,12 +351,15 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                         >
                             <PenLine className="w-4 h-4" />
                         </button>
-                        <button 
-                            onClick={() => handleDeleteBucket(bucket.id)}
-                            className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
-                        >
-                            <Trash2 className="w-4 h-4" />
-                        </button>
+                        {/* Nascondi bottone delete per bucket fiscali */}
+                        {!isTax && (
+                            <button 
+                                onClick={() => handleDeleteBucket(bucket.id)}
+                                className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                            >
+                                <Trash2 className="w-4 h-4" />
+                            </button>
+                        )}
                     </div>
                 </div>
             </div>
@@ -269,7 +368,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
             {target > 0 && (
                 <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
                     <div 
-                        className={cn("h-full rounded-full transition-all duration-500", completed ? "bg-emerald-500" : "bg-blue-600")} 
+                        className={cn("h-full rounded-full transition-all duration-500", completed ? "bg-emerald-500" : isTax ? "bg-purple-500" : "bg-blue-600")} 
                         style={{ width: `${progress}%` }} 
                     />
                 </div>
@@ -277,6 +376,9 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
         </div>
     )
   }
+
+  // --- CONTROLLO SE TAX BUCKET PER EDITING ---
+  const isEditingSystemBucket = editingBucket && isProTax && ['Aliquota INPS', 'Aliquota Imposta Sostitutiva'].includes(editingBucket.name)
 
   return (
     <div className="min-h-screen bg-gray-50 pb-24">
@@ -304,10 +406,10 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                         <div className="fixed inset-0 z-30" onClick={() => setIsSortMenuOpen(false)} />
                         <div className="absolute right-0 mt-2 w-48 bg-white rounded-xl shadow-xl border border-gray-100 z-40 overflow-hidden animate-in fade-in slide-in-from-top-2">
                             <div className="p-1">
-                                <button onClick={() => { setSortBy('default'); setIsSortMenuOpen(false) }} className={cn("w-full text-left px-3 py-2 text-sm rounded-lg font-medium", sortBy === 'default' ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50")}>Standard (Manuale)</button>
-                                <button onClick={() => { setSortBy('name'); setIsSortMenuOpen(false) }} className={cn("w-full text-left px-3 py-2 text-sm rounded-lg font-medium", sortBy === 'name' ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50")}>Alfabetico (A-Z)</button>
-                                <button onClick={() => { setSortBy('progress-desc'); setIsSortMenuOpen(false) }} className={cn("w-full text-left px-3 py-2 text-sm rounded-lg font-medium", sortBy === 'progress-desc' ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50")}>Più vicini all'obiettivo</button>
-                                <button onClick={() => { setSortBy('progress-asc'); setIsSortMenuOpen(false) }} className={cn("w-full text-left px-3 py-2 text-sm rounded-lg font-medium", sortBy === 'progress-asc' ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50")}>Più lontani dall'obiettivo</button>
+                                <button onClick={() => { setSortBy('default'); setIsSortMenuOpen(false) }} className="w-full text-left px-3 py-2 text-sm rounded-lg font-medium hover:bg-gray-50">Standard</button>
+                                <button onClick={() => { setSortBy('name'); setIsSortMenuOpen(false) }} className="w-full text-left px-3 py-2 text-sm rounded-lg font-medium hover:bg-gray-50">Alfabetico</button>
+                                <button onClick={() => { setSortBy('progress-desc'); setIsSortMenuOpen(false) }} className="w-full text-left px-3 py-2 text-sm rounded-lg font-medium hover:bg-gray-50">Più vicini</button>
+                                <button onClick={() => { setSortBy('progress-asc'); setIsSortMenuOpen(false) }} className="w-full text-left px-3 py-2 text-sm rounded-lg font-medium hover:bg-gray-50">Più lontani</button>
                             </div>
                         </div>
                     </>
@@ -340,7 +442,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
             </p>
             <p className={cn("text-xs mt-1 font-medium", totalDistributionPercentage > 100 ? "text-red-500 font-bold" : "text-gray-400")}>
               {100 - totalDistributionPercentage >= 0 
-                ? `${(100 - totalDistributionPercentage).toFixed(1)}% rimane nella Liquidità`
+                ? `${(100 - totalDistributionPercentage).toFixed(2)}% rimane nella Liquidità`
                 : 'Attenzione: Hai superato il 100%!'}
             </p>
           </div>
@@ -360,7 +462,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                 <div className="space-y-3">
                 {[1,2].map(i => <div key={i} className="h-20 bg-gray-200 rounded-xl animate-pulse" />)}
                 </div>
-            ) : activeBuckets.length === 0 && completedBuckets.length === 0 ? (
+            ) : activeBuckets.length === 0 && completedBuckets.length === 0 && taxBuckets.length === 0 ? (
                 <div className="text-center py-10 bg-white rounded-2xl border border-dashed border-gray-300">
                 <div className="bg-gray-50 w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3">
                     <PiggyBank className="w-6 h-6 text-gray-400" />
@@ -377,6 +479,21 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                 </div>
             )}
           </div>
+
+          {/* SEZIONE BUCKET FISCALI (P.IVA) */}
+          {taxBuckets.length > 0 && (
+             <div className="space-y-3 pt-4 border-t border-gray-100">
+                <div className="flex items-center justify-between px-1">
+                    <h2 className="text-sm font-bold text-purple-700 uppercase tracking-wider flex items-center gap-2">
+                        Accantonamento Tasse <span className="text-lg">💼</span>
+                    </h2>
+                    <span className="text-xs text-purple-500 font-medium font-mono bg-purple-50 px-2 py-0.5 rounded">P.IVA</span>
+                </div>
+                <div className="grid gap-3">
+                    {taxBuckets.map((bucket) => <BucketCard key={bucket.id} bucket={bucket} isTax={true} />)}
+                </div>
+             </div>
+          )}
 
           {/* SEZIONE COMPLETATI (VISIBILE SOLO SE CE NE SONO) */}
           {completedBuckets.length > 0 && (
@@ -409,7 +526,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
         </button>
       </div>
 
-      {/* MODALE AGGIUNTA (INVARIATO) */}
+      {/* MODALE AGGIUNTA */}
       {isAddFormOpen && (
         <div 
             className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in" 
@@ -434,7 +551,6 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                     onChange={e => setNewBucketName(e.target.value)}
                     placeholder="Es. Fondo Emergenza, Vacanze..."
                     className="w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900"
-                    // autoFocus RIMOSSO
                     />
                 </div>
                 
@@ -443,12 +559,12 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                         <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Auto-Distr. (%)</label>
                         <input
                         type="number"
-                        step="0.1"
+                        step="0.01" // MODIFICATO: Permette 2 decimali
                         min="0"
                         max="100"
                         value={newBucketDistribution}
                         onChange={e => setNewBucketDistribution(e.target.value)}
-                        placeholder="0.0"
+                        placeholder="0.00"
                         className="w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900"
                         />
                     </div>
@@ -502,7 +618,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
         </div>
       )}
 
-      {/* MODALE MODIFICA (INVARIATO) */}
+      {/* MODALE MODIFICA */}
       {editingBucket && (
         <div 
             className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in" 
@@ -519,13 +635,25 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
             
             <div className="overflow-y-auto p-6">
                 <form onSubmit={handleUpdateBucket} className="space-y-5">
+                
+                {/* MESSAGGIO INFORMATIVO PER BUCKET DI SISTEMA */}
+                {isEditingSystemBucket && (
+                    <div className="p-3 bg-purple-50 text-purple-700 text-xs font-medium rounded-xl flex items-center gap-2 mb-2 animate-in fade-in">
+                        <Briefcase className="w-4 h-4" /> Nome e % sono gestiti automaticamente dal Profilo P.IVA.
+                    </div>
+                )}
+
                 <div>
                     <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Nome Salvadanaio</label>
                     <input
                     type="text"
+                    disabled={!!isEditingSystemBucket} // DISABILITATO SE DI SISTEMA
                     value={editBucketName}
                     onChange={e => setEditBucketName(e.target.value)}
-                    className="w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900"
+                    className={cn(
+                        "w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900",
+                        isEditingSystemBucket && "opacity-50 cursor-not-allowed"
+                    )}
                     />
                 </div>
 
@@ -534,12 +662,16 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                         <label className="text-xs text-gray-500 font-bold uppercase ml-1 block mb-1">Auto-Distr. (%)</label>
                         <input
                         type="number"
-                        step="0.1"
+                        step="0.01"
                         min="0"
                         max="100"
+                        disabled={!!isEditingSystemBucket} // DISABILITATO SE DI SISTEMA
                         value={editBucketDistribution}
                         onChange={e => setEditBucketDistribution(e.target.value)}
-                        className="w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900"
+                        className={cn(
+                            "w-full p-4 bg-gray-50 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 focus:bg-white transition-all font-medium text-gray-900",
+                            isEditingSystemBucket && "opacity-50 cursor-not-allowed"
+                        )}
                         />
                     </div>
                     <div>

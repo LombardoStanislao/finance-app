@@ -46,13 +46,12 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
 
-      const { data, error } = await supabase
+      const { data } = await supabase
         .from('categories')
         .select('*')
         .eq('user_id', user.id)
         .order('name')
 
-      if (error) throw error
       setCategories(data || [])
     } catch (error) {
       console.error('Error loading categories:', error)
@@ -107,17 +106,32 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
     loadTransactions()
   }
 
-  // --- LOGICA DI ROLLBACK PER LA CANCELLAZIONE ---
+  // --- LOGICA DI CANCELLAZIONE (Con Protezione P.IVA) ---
   async function handleDelete(transaction: Transaction, e: React.MouseEvent) {
     e.stopPropagation()
+
+    // 1. BLOCCO SICUREZZA P.IVA
+    // Se è un transfer verso un bucket fiscale, impedisci l'eliminazione diretta.
+    if (transaction.type === 'transfer' && transaction.bucket_id) {
+        const { data: bucketCheck } = await supabase
+            .from('buckets')
+            .select('name')
+            .eq('id', transaction.bucket_id)
+            .single()
+        
+        if (bucketCheck && ['Aliquota INPS', 'Aliquota Imposta Sostitutiva'].includes(bucketCheck.name)) {
+            alert("🚫 AZIONE BLOCCATA\n\nNon puoi eliminare manualmente un singolo accantonamento fiscale.\n\nPer annullare questa operazione, devi eliminare la transazione di Entrata (Fattura) originale che l'ha generato.")
+            return
+        }
+    }
+
     if (!window.confirm('Eliminare questa transazione? L\'operazione annullerà anche eventuali movimenti collegati.')) return
 
     try {
         const { data: { user } } = await supabase.auth.getUser()
         if(!user) return
 
-        // 1. GESTIONE INVESTIMENTO (Acquisto o Vendita)
-        // Se la transazione ha un investment_id, dobbiamo aggiornare l'asset.
+        // 2. GESTIONE INVESTIMENTO (Acquisto o Vendita)
         if (transaction.investment_id) {
              const { data: investment } = await supabase
                 .from('investments')
@@ -126,18 +140,9 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
                 .single()
 
             if (investment) {
-                // Recuperiamo la quantità di quote movimentata (salvata in asset_quantity)
                 const qtyChange = (transaction as any).asset_quantity || 0 
-                
-                // --- RIPRISTINO QUANTITÀ ---
-                // Se era acquisto (+qty), dobbiamo togliere: new = curr - qty
-                // Se era vendita (-qty), dobbiamo aggiungere: new = curr - (-qty) = curr + qty
                 const newQty = Math.max(0, (investment.quantity || 0) - qtyChange)
                 
-                // --- RIPRISTINO CAPITALE INVESTITO ---
-                // Funziona per i TRANSFER (Capitale).
-                // Se era acquisto (amount < 0), invested era aumentato. Ora deve scendere (+ amount negativo)
-                // Se era vendita (amount > 0), invested era sceso. Ora deve salire (+ amount positivo)
                 let deltaInvested = 0
                 if (transaction.type === 'transfer') {
                     deltaInvested = transaction.amount 
@@ -145,8 +150,6 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
                 
                 const newInvested = Math.max(0, (investment.invested_amount || 0) + deltaInvested)
                 
-                // --- RICALCOLO VALORE CORRENTE (Stima) ---
-                // Manteniamo il prezzo per quota attuale per ricalcolare il totale
                 let newCurrentValue = investment.current_value
                 if ((investment.quantity || 0) > 0) {
                     const pricePerShare = investment.current_value / investment.quantity
@@ -163,12 +166,13 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
             }
         }
 
-        // 2. CASO ENTRATA (Distribuzioni automatiche Salvadanai)
+        // 3. CASO ENTRATA (Distribuzioni automatiche & Tasse P.IVA)
         if (transaction.type === 'income') {
             const txTime = new Date(transaction.created_at).getTime()
-            const timeStart = new Date(txTime - 2000).toISOString()
+            const timeStart = new Date(txTime - 5000).toISOString()
             const timeEnd = new Date(txTime + 5000).toISOString()
 
+            // A. Rollback Distribuzioni Automatiche (Risparmi)
             const { data: children } = await supabase
                 .from('transactions')
                 .select('*')
@@ -181,15 +185,32 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
             if (children && children.length > 0) {
                 for (const child of children) {
                     if (child.bucket_id) {
-                        const { data: bucket } = await supabase
-                            .from('buckets')
-                            .select('current_balance')
-                            .eq('id', child.bucket_id)
-                            .single()
-                        
+                        const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', child.bucket_id).single()
                         if (bucket) {
-                            const amountAddedToBucket = Math.abs(child.amount)
-                            const newBalance = Math.max(0, (bucket.current_balance || 0) - amountAddedToBucket)
+                            const newBalance = Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount))
+                            await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', child.bucket_id)
+                        }
+                    }
+                    await supabase.from('transactions').delete().eq('id', child.id)
+                }
+            }
+
+            // B. Rollback Accantonamenti Tasse (P.IVA)
+            const { data: taxChildren } = await supabase
+                .from('transactions')
+                .select('*')
+                .eq('user_id', user.id)
+                .eq('type', 'transfer')
+                .ilike('description', 'Accantonamento % (Fattura)')
+                .gte('created_at', timeStart)
+                .lte('created_at', timeEnd)
+
+            if (taxChildren && taxChildren.length > 0) {
+                for (const child of taxChildren) {
+                    if (child.bucket_id) {
+                        const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', child.bucket_id).single()
+                        if (bucket) {
+                            const newBalance = Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount))
                             await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', child.bucket_id)
                         }
                     }
@@ -198,7 +219,7 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
             }
         }
 
-        // 3. CASO USCITA/TRANSFER DA BUCKET (Restituzione fondi)
+        // 4. CASO USCITA/TRANSFER DA BUCKET (Restituzione fondi)
         else if ((transaction.type === 'expense' || transaction.type === 'transfer') && transaction.bucket_id) {
             const { data: bucket } = await supabase
                 .from('buckets')

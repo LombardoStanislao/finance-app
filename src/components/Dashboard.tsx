@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { TrendingUp, TrendingDown, Wallet, PiggyBank, Trash2, Settings, ArrowRightLeft, AlertTriangle, CheckCircle2, ShoppingBag, BookOpen } from 'lucide-react'
+import { TrendingUp, TrendingDown, Wallet, PiggyBank, Trash2, Settings, ArrowRightLeft, AlertTriangle, CheckCircle2, ShoppingBag, BookOpen, Eye, EyeOff } from 'lucide-react'
 import { supabase, type Transaction, type Category } from '../lib/supabase'
 import { formatCurrency, formatDate, cn } from '../lib/utils'
 import TransactionForm from './TransactionForm'
+import { usePrivacy } from '../context/PrivacyContext'
 
 interface BudgetProgress {
   category: Category
@@ -32,6 +33,16 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
   const [displayName, setDisplayName] = useState<string>('')
   const [isTransactionFormOpen, setIsTransactionFormOpen] = useState(false)
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null)
+
+  // HOOK PRIVACY
+  const { isPrivacyEnabled, togglePrivacy } = usePrivacy()
+
+  // Helper per nascondere i dati
+  const hide = (value: number | string, isCurrency = true) => {
+      if (isPrivacyEnabled) return '****'
+      if (typeof value === 'number' && isCurrency) return formatCurrency(value)
+      return value
+  }
 
   useEffect(() => {
     loadUser()
@@ -65,14 +76,13 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
 
       setCategories(categoriesList)
 
-      // FILTRO LISTA: Visualizziamo tutto nella lista recente per chiarezza
-      // Filtriamo solo le distribuzioni automatiche per non intasare la home
+      // FILTRO LISTA
       const filteredRecent = transactions.filter(t => 
         !t.description?.startsWith('Distribuzione automatica')
       )
       setRecentTransactions(filteredRecent.slice(0, 5))
 
-      // 2. Calcoli Liquidità (Include TUTTO)
+      // 2. Calcoli Liquidità
       const totalLiquidity = transactions.reduce((sum, t) => sum + (Number(t.amount) || 0), 0)
       setLiquidity(totalLiquidity)
 
@@ -144,14 +154,8 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
   async function handleDeleteTransaction(transaction: Transaction, e: React.MouseEvent) {
     e.stopPropagation()
 
-    // 1. BLOCCO SICUREZZA P.IVA (Come in Transactions.tsx)
     if (transaction.type === 'transfer' && transaction.bucket_id) {
-        const { data: bucketCheck } = await supabase
-            .from('buckets')
-            .select('name')
-            .eq('id', transaction.bucket_id)
-            .single()
-        
+        const { data: bucketCheck } = await supabase.from('buckets').select('name').eq('id', transaction.bucket_id).single()
         if (bucketCheck && ['Aliquota INPS', 'Aliquota Imposta Sostitutiva'].includes(bucketCheck.name)) {
             alert("🚫 AZIONE BLOCCATA\n\nNon puoi eliminare manualmente un singolo accantonamento fiscale.\n\nPer annullare questa operazione, devi eliminare la transazione di Entrata (Fattura) originale che l'ha generato.")
             return
@@ -164,41 +168,27 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
         const { data: { user } } = await supabase.auth.getUser()
         if(!user) return
 
-        // 2. CASO INVESTIMENTO
         if (transaction.investment_id) {
              const { data: investment } = await supabase.from('investments').select('*').eq('id', transaction.investment_id).single()
              if (investment) {
                  const qtyChange = (transaction as any).asset_quantity || 0 
                  const newQty = Math.max(0, (investment.quantity || 0) - qtyChange)
-                 
                  let deltaInvested = 0
-                 if (transaction.type === 'transfer') {
-                     deltaInvested = transaction.amount 
-                 }
-                 
+                 if (transaction.type === 'transfer') deltaInvested = transaction.amount 
                  const newInvested = Math.max(0, (investment.invested_amount || 0) + deltaInvested)
-                 
                  let newCurrentValue = investment.current_value
                  if ((investment.quantity || 0) > 0) {
                      const price = investment.current_value / investment.quantity
                      newCurrentValue = price * newQty
                  }
-
-                 await supabase.from('investments').update({
-                     quantity: newQty,
-                     invested_amount: newInvested,
-                     current_value: newCurrentValue
-                 }).eq('id', investment.id)
+                 await supabase.from('investments').update({ quantity: newQty, invested_amount: newInvested, current_value: newCurrentValue }).eq('id', investment.id)
              }
         }
 
-        // 3. CASO ENTRATA (Distribuzione Auto & P.IVA)
         if (transaction.type === 'income') {
             const txTime = new Date(transaction.created_at).getTime()
             const timeStart = new Date(txTime - 5000).toISOString()
             const timeEnd = new Date(txTime + 5000).toISOString()
-            
-            // A. Rollback Distribuzioni Automatiche
             const { data: children } = await supabase.from('transactions').select('*').eq('user_id', user.id).eq('type', 'transfer').ilike('description', 'Distribuzione automatica%').gte('created_at', timeStart).lte('created_at', timeEnd)
             if (children) {
                 for (const child of children) {
@@ -209,8 +199,6 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                     await supabase.from('transactions').delete().eq('id', child.id)
                 }
             }
-
-            // B. Rollback Accantonamenti Tasse (P.IVA)
             const { data: taxChildren } = await supabase.from('transactions').select('*').eq('user_id', user.id).eq('type', 'transfer').ilike('description', 'Accantonamento % (Fattura)').gte('created_at', timeStart).lte('created_at', timeEnd)
             if (taxChildren) {
                 for (const child of taxChildren) {
@@ -224,9 +212,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                     await supabase.from('transactions').delete().eq('id', child.id)
                 }
             }
-        } 
-        // 4. CASO SPESA DA BUCKET
-        else if ((transaction.type === 'expense' || transaction.type === 'transfer') && transaction.bucket_id) {
+        } else if ((transaction.type === 'expense' || transaction.type === 'transfer') && transaction.bucket_id) {
             const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', transaction.bucket_id).single()
             if (bucket) await supabase.from('buckets').update({ current_balance: (bucket.current_balance || 0) + Math.abs(transaction.amount) }).eq('id', transaction.bucket_id)
         }
@@ -249,6 +235,10 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
            <h1 className="text-xl font-bold text-gray-900 leading-none">{displayName}</h1>
         </div>
         <div className="flex gap-2">
+            {/* TASTO PRIVACY */}
+            <button onClick={togglePrivacy} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-600 border border-gray-100 active:scale-95 transition-transform">
+                {isPrivacyEnabled ? <EyeOff className="w-5 h-5" strokeWidth={2} /> : <Eye className="w-5 h-5" strokeWidth={2} />}
+            </button>
             <button onClick={onOpenGuide} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-blue-600 border border-gray-100 active:scale-95 transition-transform"><BookOpen className="w-5 h-5" strokeWidth={2} /></button>
             <button onClick={onOpenSettings} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-600 border border-gray-100 active:scale-95 transition-transform"><Settings className="w-5 h-5" strokeWidth={2} /></button>
         </div>
@@ -269,7 +259,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                     <Wallet className="w-4 h-4" />
                     <span className="text-xs font-bold uppercase tracking-wider">Patrimonio Totale</span>
                 </div>
-                <p className="text-4xl font-bold tracking-tight mb-6">{formatCurrency(netWorth)}</p>
+                <p className="text-4xl font-bold tracking-tight mb-6">{hide(netWorth)}</p>
                 
                 <div className="flex gap-3">
                     <div className="flex-1 bg-white/10 backdrop-blur-sm rounded-xl p-3 border border-white/10">
@@ -277,14 +267,14 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                              <PiggyBank className="w-3.5 h-3.5" />
                              <span className="text-[10px] font-bold uppercase">Liquidità</span>
                         </div>
-                        <p className="font-semibold text-lg">{formatCurrency(liquidity)}</p>
+                        <p className="font-semibold text-lg">{hide(liquidity)}</p>
                     </div>
                     <button onClick={onOpenInvestments} className="flex-1 bg-white/10 backdrop-blur-sm rounded-xl p-3 border border-white/10 text-left hover:bg-white/20 transition-colors">
                         <div className="flex items-center gap-1.5 mb-1 text-white/90">
                              <TrendingUp className="w-3.5 h-3.5" />
                              <span className="text-[10px] font-bold uppercase">Investimenti</span>
                         </div>
-                        <p className="font-semibold text-lg">{formatCurrency(investmentsTotal)}</p>
+                        <p className="font-semibold text-lg">{hide(investmentsTotal)}</p>
                     </button>
                 </div>
             </div>
@@ -297,14 +287,14 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                <TrendingUp className="w-4 h-4 text-emerald-600" />
             </div>
             <p className="text-xs text-gray-500 font-medium uppercase mb-0.5">Entrate Mese</p>
-            <p className="text-lg font-bold text-gray-900">{formatCurrency(monthIncome)}</p>
+            <p className="text-lg font-bold text-gray-900">{hide(monthIncome)}</p>
           </div>
           <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
             <div className="w-8 h-8 rounded-full bg-rose-50 flex items-center justify-center mb-3">
                <TrendingDown className="w-4 h-4 text-rose-600" />
             </div>
             <p className="text-xs text-gray-500 font-medium uppercase mb-0.5">Uscite Mese</p>
-            <p className="text-lg font-bold text-gray-900">{formatCurrency(monthExpenses)}</p>
+            <p className="text-lg font-bold text-gray-900">{hide(monthExpenses)}</p>
           </div>
         </div>
 
@@ -343,13 +333,13 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                     <div>
                         <div className="flex items-baseline gap-1 mb-2">
                             <span className={cn("text-2xl font-bold", isOver ? "text-rose-600" : "text-gray-900")}>
-                                {formatCurrency(budget.remaining)}
+                                {hide(budget.remaining)}
                             </span>
                             <span className="text-xs text-gray-400 font-medium">rimanenti</span>
                         </div>
                         <div className="flex justify-between text-[10px] text-gray-400 mb-1.5 font-medium">
-                            <span>{formatCurrency(budget.spent)} spesi</span>
-                            <span>Limit {formatCurrency(Number(budget.category.budget_limit))}</span>
+                            <span>{hide(budget.spent)} spesi</span>
+                            <span>Limit {hide(Number(budget.category.budget_limit))}</span>
                         </div>
                         <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
                             <div className={cn("h-full rounded-full transition-all duration-500", barColor)} style={{ width: `${Math.min(budget.percentage, 100)}%` }} />
@@ -398,7 +388,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                     </div>
                     <div className="flex flex-col items-end gap-2 shrink-0 ml-2">
                         <span className={cn("font-bold text-base whitespace-nowrap", t.type === 'income' ? "text-emerald-600" : t.type === 'transfer' ? "text-gray-600" : "text-rose-600")}>
-                        {t.type === 'income' ? '+' : t.type === 'expense' ? '-' : ''} {formatCurrency(Math.abs(t.amount))}
+                        {t.type === 'income' ? '+' : t.type === 'expense' ? '-' : ''} {hide(Math.abs(t.amount))}
                         </span>
                         <button onClick={(e) => handleDeleteTransaction(t, e)} className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"><Trash2 className="w-4 h-4" /></button>
                     </div>

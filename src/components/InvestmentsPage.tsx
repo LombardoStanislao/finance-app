@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
-import { ArrowLeft, Plus, Trash2, X, TrendingUp, PieChart, Landmark, Bitcoin, Box, ScrollText, Settings, RefreshCw, PenLine, Loader2, BookOpen, ArrowDown, ArrowUp, History, Info, Wallet, Calculator, ArrowRightLeft } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, X, TrendingUp, PieChart, Landmark, Bitcoin, Box, ScrollText, Settings, RefreshCw, PenLine, Loader2, BookOpen, ArrowDown, ArrowUp, History, Info, Wallet, Calculator, ArrowRightLeft, Eye, EyeOff } from 'lucide-react'
 import { supabase, type Investment, type Transaction } from '../lib/supabase'
 import { formatCurrency, formatDate, cn } from '../lib/utils'
+import { usePrivacy } from '../context/PrivacyContext' // Import Context
 
 interface InvestmentsPageProps {
   onBack: () => void
@@ -49,6 +50,16 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
   
   const [formLoading, setFormLoading] = useState(false)
 
+  // HOOK PRIVACY
+  const { isPrivacyEnabled, togglePrivacy } = usePrivacy()
+
+  // HELPER PRIVACY
+  const hide = (value: number | string, isCurrency = true) => {
+      if (isPrivacyEnabled) return '****'
+      if (typeof value === 'number' && isCurrency) return formatCurrency(value)
+      return value
+  }
+
   const supportsAutomation = ['ETF', 'Azioni', 'Crypto'].includes(formType)
 
   const categoriesConfig = [
@@ -63,7 +74,7 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
   // Arrotondamento valuta (2 decimali)
   const round2 = (num: number) => Math.round((num + Number.EPSILON) * 100) / 100
   
-  // NUOVO: Arrotondamento Quote (6 decimali per supportare frazionati)
+  // Arrotondamento Quote (6 decimali per supportare frazionati)
   const roundQty = (num: number) => Math.round((num + Number.EPSILON) * 1000000) / 1000000
 
   // --- CALCOLI DERIVATI ---
@@ -78,7 +89,7 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
   const sellNetDetails = (() => {
       if (operationMode !== 'sell' || !selectedInvestment) return { realizedPL: 0, capitalRepaid: 0 }
       const currentPMC = (selectedInvestment.invested_amount || 0) / (selectedInvestment.quantity || 1)
-      const costBasis = round2(currentPMC * qtyVal) // Qui usiamo round2 perché sono Soldi
+      const costBasis = round2(currentPMC * qtyVal) 
       const netProceeds = round2(moneyVal - feesVal) 
       const realizedPL = round2(netProceeds - costBasis)
       return { realizedPL, capitalRepaid: costBasis }
@@ -163,9 +174,7 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
     finally { setIsUpdating(false) }
   }
 
-  // --- FUNZIONE HELPER CATEGORIA COMMISSIONI ---
   async function getOrCreateCommissionCategory(userId: string): Promise<string> {
-      // 1. Cerca se esiste già
       const { data: existing } = await supabase
           .from('categories')
           .select('id')
@@ -176,7 +185,6 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
       
       if (existing) return existing.id
 
-      // 2. Se non esiste, creala
       const { data: newCat, error } = await supabase
           .from('categories')
           .insert({
@@ -203,10 +211,7 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
 
       const isAutomated = supportsAutomation && !isManual
       
-      // FIX: Usa roundQty per la quantità (6 decimali)
       const qty = roundQty(parseFloat(formQuantity) || 0)
-      
-      // Usa round2 per i soldi (2 decimali)
       const totalMoney = round2(parseFloat(formTotalSpent) || 0)
       const fees = round2(Math.max(0, parseFloat(formFees) || 0)) 
       
@@ -278,7 +283,6 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
               const { data: currentAsset } = await supabase.from('investments').select('*').eq('id', targetInvestmentId).single()
               if (!currentAsset) throw new Error('Asset non trovato')
 
-              // FIX: Usa roundQty per la somma quote
               const newTotalQty = roundQty((currentAsset.quantity || 0) + qty)
               const newTotalInvested = round2((currentAsset.invested_amount || 0) + netInvestedAmount)
               
@@ -333,7 +337,6 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
 
           const { realizedPL, capitalRepaid } = sellNetDetails
           
-          // FIX: Usa roundQty per la sottrazione quote
           const newQty = roundQty(selectedInvestment.quantity! - qty)
           const newInvested = round2(selectedInvestment.invested_amount! - capitalRepaid)
           
@@ -394,13 +397,10 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
       if (!selectedInvestment) return
 
       try {
-          // FIX: roundQty
           const qtyChange = (tx as any).asset_quantity || 0 
-          
           const currentQty = selectedInvestment.quantity || 0
           const currentInvested = selectedInvestment.invested_amount || 0
 
-          // FIX: roundQty anche nel rollback
           const newQty = roundQty(currentQty - qtyChange) 
           
           let deltaInvested = 0
@@ -507,6 +507,10 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
                 <h1 className="text-xl font-bold text-gray-900">Investimenti</h1>
             </div>
             <div className="flex gap-2">
+                {/* TASTO PRIVACY */}
+                <button onClick={togglePrivacy} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-600 border border-gray-100 active:scale-95 transition-transform">
+                    {isPrivacyEnabled ? <EyeOff className="w-5 h-5" strokeWidth={2} /> : <Eye className="w-5 h-5" strokeWidth={2} />}
+                </button>
                 <button 
                     onClick={handleUpdatePrices} 
                     className={cn("p-2 rounded-full transition-all flex items-center gap-2 border", minutesRemaining > 0 ? "bg-gray-100 text-gray-400 border-gray-100" : "bg-blue-50 text-blue-600 border-blue-100 active:scale-95")}
@@ -525,10 +529,12 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex flex-col items-center justify-center text-center relative overflow-hidden">
             <div className="absolute top-0 left-0 w-full h-1.5" style={{ backgroundColor: primaryColor }}></div>
             <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">Patrimonio Corrente</p>
-            <p className="text-4xl font-black text-gray-900 tracking-tight">{formatCurrency(totalAssets)}</p>
+            {/* APPLICAZIONE PRIVACY */}
+            <p className="text-4xl font-black text-gray-900 tracking-tight">{hide(totalAssets)}</p>
             <div className={cn("mt-3 px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-2 border", totalPL >= 0 ? "bg-emerald-50 text-emerald-700 border-emerald-100" : "bg-rose-50 text-rose-700 border-rose-100")}>
                 {totalPL >= 0 ? <TrendingUp className="w-3.5 h-3.5" /> : <ArrowDown className="w-3.5 h-3.5" />}
-                <span>{totalPL >= 0 ? '+' : ''}{formatCurrency(totalPL)} ({totalPLPercent.toFixed(2)}%)</span>
+                {/* APPLICAZIONE PRIVACY AL P&L MA NON ALLA PERCENTUALE */}
+                <span>{totalPL >= 0 ? '+' : ''}{hide(totalPL)} ({totalPLPercent.toFixed(2)}%)</span>
             </div>
         </div>
 
@@ -552,7 +558,8 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
                                     </div>
                                 </div>
                                 <div className="text-right">
-                                    <p className="font-bold text-gray-900">{formatCurrency(categoryTotal)}</p>
+                                    {/* APPLICAZIONE PRIVACY */}
+                                    <p className="font-bold text-gray-900">{hide(categoryTotal)}</p>
                                     <p className="text-[10px] text-gray-400 font-medium">{percentage.toFixed(1)}%</p>
                                 </div>
                             </div>
@@ -574,14 +581,16 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
                                                     {invAmount > 0 && (
                                                         <span className={cn("text-[10px] font-bold flex items-center gap-0.5", pl >= 0 ? "text-emerald-600" : "text-rose-600")}>
                                                             {pl >= 0 ? <ArrowUp className="w-2.5 h-2.5" /> : <ArrowDown className="w-2.5 h-2.5" />}
-                                                            {formatCurrency(pl)} ({plPerc.toFixed(1)}%)
+                                                            {/* APPLICAZIONE PRIVACY */}
+                                                            {hide(pl)} ({plPerc.toFixed(1)}%)
                                                         </span>
                                                     )}
                                                 </div>
                                             </div>
                                             <div className="flex items-center gap-4 shrink-0">
                                                 <div className="text-right">
-                                                    <span className="font-bold text-gray-900 text-base block">{formatCurrency(item.current_value)}</span>
+                                                    {/* APPLICAZIONE PRIVACY */}
+                                                    <span className="font-bold text-gray-900 text-base block">{hide(item.current_value)}</span>
                                                     {item.quantity && <span className="text-[10px] text-gray-400 font-medium block">{item.quantity} quote</span>}
                                                 </div>
                                             </div>
@@ -615,13 +624,15 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
                    <div className="grid grid-cols-2 gap-4">
                        <div className="p-4 bg-gray-50 rounded-2xl">
                            <p className="text-[10px] text-gray-400 font-bold uppercase mb-1">Valore Attuale</p>
-                           <p className="text-2xl font-black text-gray-900">{formatCurrency(selectedInvestment.current_value)}</p>
+                           {/* APPLICAZIONE PRIVACY */}
+                           <p className="text-2xl font-black text-gray-900">{hide(selectedInvestment.current_value)}</p>
                        </div>
                        <div className="p-4 bg-gray-50 rounded-2xl">
                            <p className="text-[10px] text-gray-400 font-bold uppercase mb-1">Prezzo Medio (PMC)</p>
+                           {/* APPLICAZIONE PRIVACY */}
                            <p className="text-2xl font-black text-gray-900">
                                {(selectedInvestment.quantity || 0) > 0 
-                                ? formatCurrency((selectedInvestment.invested_amount || 0) / (selectedInvestment.quantity || 1)) 
+                                ? hide((selectedInvestment.invested_amount || 0) / (selectedInvestment.quantity || 1)) 
                                 : '-'}
                            </p>
                        </div>
@@ -635,7 +646,8 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
                            return (
                                <span className={cn("text-sm font-bold flex items-center gap-1", pl >= 0 ? "text-emerald-600" : "text-rose-600")}>
                                    {pl >= 0 ? <ArrowUp className="w-4 h-4"/> : <ArrowDown className="w-4 h-4"/>}
-                                   {formatCurrency(pl)} ({plPerc.toFixed(2)}%)
+                                   {/* APPLICAZIONE PRIVACY */}
+                                   {hide(pl)} ({plPerc.toFixed(2)}%)
                                </span>
                            )
                        })()}
@@ -658,7 +670,8 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
                                        </div>
                                        <div className="flex items-center gap-3">
                                             <div className="text-right">
-                                                <p className={cn("text-sm font-bold", tx.amount > 0 ? "text-emerald-600" : "text-rose-600")}>{formatCurrency(tx.amount)}</p>
+                                                {/* APPLICAZIONE PRIVACY */}
+                                                <p className={cn("text-sm font-bold", tx.amount > 0 ? "text-emerald-600" : "text-rose-600")}>{hide(tx.amount)}</p>
                                                 {(tx as any).asset_quantity && <p className="text-[10px] text-gray-500 font-medium">{(tx as any).asset_quantity > 0 ? '+' : ''}{(tx as any).asset_quantity} quote</p>}
                                             </div>
                                             <button onClick={() => handleDeleteTransaction(tx)} className="p-1.5 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded transition-colors"><Trash2 className="w-4 h-4" /></button>

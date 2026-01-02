@@ -11,6 +11,7 @@ import InvestmentsPage from './components/InvestmentsPage'
 import GuidePage from './components/GuidePage'
 import BottomNav from './components/BottomNav'
 import TransactionForm from './components/TransactionForm'
+import { PrivacyProvider } from './context/PrivacyContext' // Import del Context
 import './App.css'
 
 type View = 'dashboard' | 'settings' | 'transactions' | 'buckets' | 'statistics' | 'investments' | 'guide'
@@ -90,83 +91,85 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
-      <main className="flex-1 pb-20">
+    <PrivacyProvider>
+      <div className="min-h-screen bg-gray-50 flex flex-col">
+        <main className="flex-1 pb-20">
+          
+          {currentView === 'guide' && (
+            <GuidePage 
+              onBack={() => setCurrentView('dashboard')}
+              primaryColor={primaryColor}
+            />
+          )}
+
+          {currentView === 'settings' && (
+            <Settings
+              onBack={() => setCurrentView('dashboard')}
+              onProfileUpdate={handleProfileUpdate}
+              primaryColor={primaryColor}
+              onColorChange={handleColorChange}
+            />
+          )}
+          {currentView === 'transactions' && (
+            <Transactions
+              onBack={() => setCurrentView('dashboard')}
+              onOpenSettings={() => setCurrentView('settings')}
+              primaryColor={primaryColor}
+            />
+          )}
+          {currentView === 'buckets' && (
+            <BucketsPage
+              onBack={() => setCurrentView('dashboard')}
+              onOpenSettings={() => setCurrentView('settings')}
+              primaryColor={primaryColor}
+            />
+          )}
+          {currentView === 'statistics' && (
+            <Statistics
+              onBack={() => setCurrentView('dashboard')}
+              onOpenSettings={() => setCurrentView('settings')}
+              primaryColor={primaryColor}
+            />
+          )}
+          {currentView === 'investments' && (
+            <InvestmentsPage
+              onBack={() => setCurrentView('dashboard')}
+              onOpenSettings={() => setCurrentView('settings')}
+              onOpenGuide={() => setCurrentView('guide')}
+              primaryColor={primaryColor}
+            />
+          )}
+          {currentView === 'dashboard' && (
+            <Dashboard
+              primaryColor={primaryColor}
+              profileUpdated={profileUpdated}
+              onOpenSettings={() => setCurrentView('settings')}
+              onOpenInvestments={() => setCurrentView('investments')}
+              onOpenGuide={() => setCurrentView('guide')}
+            />
+          )}
+        </main>
+
+        {currentView !== 'guide' && (
+          <BottomNav
+              currentView={currentView === 'settings' ? 'dashboard' : currentView as any} 
+              onNavigate={(view) => handleNavigate(view as View)}
+              onAddTransaction={handleAddTransaction}
+              primaryColor={primaryColor}
+          />
+        )}
         
-        {currentView === 'guide' && (
-          <GuidePage 
-            onBack={() => setCurrentView('dashboard')}
-            primaryColor={primaryColor}
-          />
-        )}
-
-        {currentView === 'settings' && (
-          <Settings
-            onBack={() => setCurrentView('dashboard')}
-            onProfileUpdate={handleProfileUpdate}
-            primaryColor={primaryColor}
-            onColorChange={handleColorChange}
-          />
-        )}
-        {currentView === 'transactions' && (
-          <Transactions
-            onBack={() => setCurrentView('dashboard')}
-            onOpenSettings={() => setCurrentView('settings')}
-            primaryColor={primaryColor}
-          />
-        )}
-        {currentView === 'buckets' && (
-          <BucketsPage
-            onBack={() => setCurrentView('dashboard')}
-            onOpenSettings={() => setCurrentView('settings')}
-            primaryColor={primaryColor}
-          />
-        )}
-        {currentView === 'statistics' && (
-          <Statistics
-            onBack={() => setCurrentView('dashboard')}
-            onOpenSettings={() => setCurrentView('settings')}
-            primaryColor={primaryColor}
-          />
-        )}
-        {currentView === 'investments' && (
-          <InvestmentsPage
-            onBack={() => setCurrentView('dashboard')}
-            onOpenSettings={() => setCurrentView('settings')}
-            onOpenGuide={() => setCurrentView('guide')}
-            primaryColor={primaryColor}
-          />
-        )}
-        {currentView === 'dashboard' && (
-          <Dashboard
-            primaryColor={primaryColor}
-            profileUpdated={profileUpdated}
-            onOpenSettings={() => setCurrentView('settings')}
-            onOpenInvestments={() => setCurrentView('investments')}
-            onOpenGuide={() => setCurrentView('guide')}
-          />
-        )}
-      </main>
-
-      {currentView !== 'guide' && (
-        <BottomNav
-            currentView={currentView === 'settings' ? 'dashboard' : currentView as any} 
-            onNavigate={(view) => handleNavigate(view as View)}
-            onAddTransaction={handleAddTransaction}
-            primaryColor={primaryColor}
+        <TransactionForm
+          isOpen={isTransactionFormOpen}
+          onClose={() => setIsTransactionFormOpen(false)}
+          onSuccess={() => {
+            setIsTransactionFormOpen(false)
+            setProfileUpdated(prev => prev + 1)
+          }}
+          primaryColor={primaryColor}
         />
-      )}
-      
-      <TransactionForm
-        isOpen={isTransactionFormOpen}
-        onClose={() => setIsTransactionFormOpen(false)}
-        onSuccess={() => {
-          setIsTransactionFormOpen(false)
-          setProfileUpdated(prev => prev + 1)
-        }}
-        primaryColor={primaryColor}
-      />
-    </div>
+      </div>
+    </PrivacyProvider>
   )
 }
 

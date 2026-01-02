@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { X, TrendingUp, TrendingDown, ArrowRightLeft, Calendar, AlignLeft, PieChart, PiggyBank, Briefcase } from 'lucide-react'
+import { X, TrendingUp, TrendingDown, ArrowRightLeft, Calendar, AlignLeft, PieChart, PiggyBank, Briefcase, AlertTriangle } from 'lucide-react'
 import { supabase, type Category, type Bucket, type Transaction } from '../lib/supabase'
 import { cn, formatCurrency } from '../lib/utils'
 
@@ -44,6 +44,9 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
   
   const [editingId, setEditingId] = useState<string | null>(null)
   
+  // Stato per bloccare modifiche rischiose
+  const [hasLinkedChildren, setHasLinkedChildren] = useState(false)
+  
   // Dati caricati
   const [categories, setCategories] = useState<CategoryWithChildren[]>([])
   const [buckets, setBuckets] = useState<BucketWithTarget[]>([])
@@ -55,49 +58,78 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
 
   const [loading, setLoading] = useState(false)
 
+  // Caricamento dati e Setup Edit
   useEffect(() => {
     if (isOpen) {
       loadData()
       if (editingTransaction) {
         setEditingId(editingTransaction.id)
         setAmount(Math.abs(editingTransaction.amount).toString())
-        setCategoryId(editingTransaction.category_id || '')
+        
+        // Imposta Data e Descrizione
         setDate(editingTransaction.date.split('T')[0])
         setDescription(editingTransaction.description || '')
         
-        // Gestione tipo 'initial' come 'income' visivamente
-        setType(editingTransaction.type === 'initial' ? 'income' : editingTransaction.type)
+        // Gestione Tipo
+        const targetType = editingTransaction.type === 'initial' ? 'income' : editingTransaction.type
+        setType(targetType)
+        
+        // Imposta Categoria (importante farlo qui, non dipendere da useEffect type)
+        if (editingTransaction.category_id) {
+            setCategoryId(editingTransaction.category_id)
+        }
         
         setBucketId(editingTransaction.bucket_id || '')
-        // Reset special flags on edit to avoid confusion
+        
+        // Reset special flags on edit
         setIsInvoice(false)
         setApplyAutoSplit(false)
+
+        // Controlla se ha figli collegati (per blocco sicurezza)
+        checkLinkedTransactions(editingTransaction)
       } else {
         resetForm()
       }
     }
   }, [isOpen, editingTransaction])
 
-  // Reset switch P.IVA quando cambia il tipo
-  useEffect(() => {
-      if (type !== 'income') setIsInvoice(false)
-      // Reset categoria se cambio tipo, per evitare incongruenze
-      setCategoryId('') 
-  }, [type])
+  // Gestione cambio tipo manuale
+  const handleTypeChange = (newType: 'income' | 'expense' | 'transfer') => {
+      setType(newType)
+      if (newType !== 'income') setIsInvoice(false)
+      // Se stiamo creando, resetta la categoria. Se stiamo editando, mantieni quella caricata (se compatibile) o resetta.
+      // Per semplicità e per evitare bug visivi, resettiamo la categoria al cambio tipo manuale.
+      if (!editingId) setCategoryId('') 
+  }
+
+  async function checkLinkedTransactions(tx: Transaction) {
+      try {
+          const txTime = new Date(tx.created_at).getTime()
+          const timeStart = new Date(txTime - 2000).toISOString() // 2 secondi tolleranza
+          const timeEnd = new Date(txTime + 2000).toISOString()
+
+          const { count } = await supabase
+            .from('transactions')
+            .select('*', { count: 'exact', head: true })
+            .eq('user_id', tx.user_id)
+            .neq('id', tx.id)
+            .gte('created_at', timeStart)
+            .lte('created_at', timeEnd)
+            .eq('type', 'transfer') 
+          
+          setHasLinkedChildren((count || 0) > 0)
+
+      } catch (e) {
+          console.error("Errore check figli", e)
+      }
+  }
 
   async function loadData() {
     try {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
 
-      // 1. Load Categories
-      const { data: cats } = await supabase
-        .from('categories')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('name')
-
-      // Organize categories tree
+      const { data: cats } = await supabase.from('categories').select('*').eq('user_id', user.id).order('name')
       const categoryMap = new Map<string, CategoryWithChildren>()
       const rootCategories: CategoryWithChildren[] = []
       
@@ -112,20 +144,10 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
       })
       setCategories(rootCategories)
 
-      // 2. Load Buckets
-      const { data: bucks } = await supabase
-        .from('buckets')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('created_at')
+      const { data: bucks } = await supabase.from('buckets').select('*').eq('user_id', user.id).order('created_at')
       setBuckets(bucks || [])
 
-      // 3. Load Tax Profile (P.IVA)
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('is_pro_tax, tax_profitability_coeff, tax_inps_rate, tax_flat_rate')
-        .eq('id', user.id)
-        .maybeSingle()
+      const { data: profile } = await supabase.from('profiles').select('is_pro_tax, tax_profitability_coeff, tax_inps_rate, tax_flat_rate').eq('id', user.id).maybeSingle()
       
       if (profile && profile.is_pro_tax) {
           setTaxProfile({
@@ -138,9 +160,7 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
           setTaxProfile(null)
       }
 
-    } catch (error) {
-      console.error('Error loading form data:', error)
-    }
+    } catch (error) { console.error('Error loading form data:', error) }
   }
 
   function resetForm() {
@@ -156,58 +176,31 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
     setTransferDestination('')
     setIsInvoice(false)
     setAutoSaveTaxes(true)
+    setHasLinkedChildren(false)
   }
 
   // Helper per calcoli fiscali
   const taxCalculations = (() => {
       if (!taxProfile || !amount || type !== 'income' || !isInvoice) return null
-      
       const gross = parseFloat(amount)
       const taxable = gross * (taxProfile.tax_profitability_coeff / 100)
       const inps = taxable * (taxProfile.tax_inps_rate / 100)
       const tax = taxable * (taxProfile.tax_flat_rate / 100)
       const net = gross - inps - tax
-
-      return {
-          gross,
-          taxable,
-          inps,
-          tax,
-          net
-      }
+      return { gross, taxable, inps, tax, net }
   })()
 
-  // Helper per trovare/creare bucket
   async function getOrCreateBucket(userId: string, name: string): Promise<string> {
       const existing = buckets.find(b => b.name === name)
       if (existing) return existing.id
-
-      const { data, error } = await supabase
-          .from('buckets')
-          .insert({
-              user_id: userId,
-              name: name,
-              distribution_percentage: 0,
-              current_balance: 0,
-              target_amount: 0
-          })
-          .select('id')
-          .single()
-      
+      const { data, error } = await supabase.from('buckets').insert({ user_id: userId, name: name, distribution_percentage: 0, current_balance: 0, target_amount: 0 }).select('id').single()
       if (error) throw error
       return data.id
   }
 
   async function handleAutoSplitLogic(userId: string, totalAmount: number, transactionDate: string) {
-      // FIX: Escludi esplicitamente i bucket fiscali dalla distribuzione automatica generica
       const taxBucketNames = ['Aliquota INPS', 'Aliquota Imposta Sostitutiva']
-
-      // Filtra i bucket attivi con % > 0, non pieni, E CHE NON SONO TASSE
-      const activeBuckets = buckets.filter(b => 
-          b.distribution_percentage > 0 && 
-          !taxBucketNames.includes(b.name) && // <-- FILTRO IMPORTANTE
-          (!b.target_amount || b.target_amount === 0 || (b.current_balance || 0) < b.target_amount)
-      )
+      const activeBuckets = buckets.filter(b => b.distribution_percentage > 0 && !taxBucketNames.includes(b.name) && (!b.target_amount || b.target_amount === 0 || (b.current_balance || 0) < b.target_amount))
 
       if (activeBuckets.length === 0) return
 
@@ -215,37 +208,16 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
       
       for (const bucket of activeBuckets) {
           if (remainingToDistribute <= 0) break
-
           let share = totalAmount * (bucket.distribution_percentage / 100)
-          
-          // Logica Waterfall (se c'è target e share lo supera)
           if (bucket.target_amount && bucket.target_amount > 0) {
               const spaceLeft = bucket.target_amount - (bucket.current_balance || 0)
-              if (share > spaceLeft) {
-                  share = Math.max(0, spaceLeft) // Riempi solo fino al target
-              }
+              if (share > spaceLeft) share = Math.max(0, spaceLeft) 
           }
-
-          // Arrotonda
           share = Math.round((share + Number.EPSILON) * 100) / 100
 
           if (share > 0) {
-              // Aggiorna bucket
-              await supabase.from('buckets').update({
-                  current_balance: (bucket.current_balance || 0) + share
-              }).eq('id', bucket.id)
-
-              // Crea transazione transfer child
-              await supabase.from('transactions').insert({
-                  user_id: userId,
-                  amount: -Math.abs(share), // Esce dalla liquidità (teorica) verso bucket
-                  type: 'transfer',
-                  description: `Distribuzione automatica a ${bucket.name}`,
-                  date: transactionDate,
-                  bucket_id: bucket.id,
-                  created_at: new Date().toISOString() // timestamp simile per raggruppare
-              })
-              
+              await supabase.from('buckets').update({ current_balance: (bucket.current_balance || 0) + share }).eq('id', bucket.id)
+              await supabase.from('transactions').insert({ user_id: userId, amount: -Math.abs(share), type: 'transfer', description: `Distribuzione automatica a ${bucket.name}`, date: transactionDate, bucket_id: bucket.id, created_at: new Date().toISOString() })
               remainingToDistribute -= share
           }
       }
@@ -262,150 +234,83 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
       const amountVal = parseFloat(amount)
       let finalAmount = type === 'expense' ? -Math.abs(amountVal) : Math.abs(amountVal)
 
-      // --- GESTIONE TRANSFER ---
       if (type === 'transfer') {
           if (!transferSource || !transferDestination) throw new Error('Seleziona origine e destinazione')
           
-          // 1. Prelievo da Source
           if (transferSource === 'liquidity') {
-              // Creiamo un'uscita dalla liquidità (Transazione transfer negativa)
-              // Se destinazione è un bucket
                const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', transferDestination).single()
                await supabase.from('buckets').update({ current_balance: (bucket?.current_balance || 0) + amountVal }).eq('id', transferDestination)
-               
-               // Crea Transazione Transfer (visualizzata come uscita dalla liquidità)
-               await supabase.from('transactions').insert({
-                   user_id: user.id,
-                   amount: -Math.abs(amountVal),
-                   type: 'transfer',
-                   description: `Trasferimento a ${buckets.find(b=>b.id === transferDestination)?.name}`,
-                   date: new Date(date).toISOString(),
-                   bucket_id: transferDestination
-               })
+               await supabase.from('transactions').insert({ user_id: user.id, amount: -Math.abs(amountVal), type: 'transfer', description: `Trasferimento a ${buckets.find(b=>b.id === transferDestination)?.name}`, date: new Date(date).toISOString(), bucket_id: transferDestination })
           } else {
-              // Source è un Bucket
               const { data: sourceBucket } = await supabase.from('buckets').select('current_balance').eq('id', transferSource).single()
               if ((sourceBucket?.current_balance || 0) < amountVal) throw new Error('Saldo insufficiente nel salvadanaio')
-              
-              // Togli da source
               await supabase.from('buckets').update({ current_balance: (sourceBucket?.current_balance || 0) - amountVal }).eq('id', transferSource)
 
               if (transferDestination === 'liquidity') {
-                  // Bucket -> Liquidità
-                  await supabase.from('transactions').insert({
-                       user_id: user.id,
-                       amount: Math.abs(amountVal), // Entrata in liquidità (ma tipo transfer)
-                       type: 'transfer',
-                       description: `Prelievo da ${buckets.find(b=>b.id === transferSource)?.name}`,
-                       date: new Date(date).toISOString(),
-                       bucket_id: transferSource 
-                   })
+                  await supabase.from('transactions').insert({ user_id: user.id, amount: Math.abs(amountVal), type: 'transfer', description: `Prelievo da ${buckets.find(b=>b.id === transferSource)?.name}`, date: new Date(date).toISOString(), bucket_id: transferSource })
               } else {
-                  // Bucket -> Bucket
                   const { data: destBucket } = await supabase.from('buckets').select('current_balance').eq('id', transferDestination).single()
                   await supabase.from('buckets').update({ current_balance: (destBucket?.current_balance || 0) + amountVal }).eq('id', transferDestination)
               }
           }
-      } 
-      // --- GESTIONE INCOME / EXPENSE ---
-      else {
-          
+      } else {
           if (editingId) {
             // Edit existing
-            await supabase
-                .from('transactions')
-                .update({
-                amount: finalAmount,
-                category_id: categoryId || null,
-                date: new Date(date).toISOString(),
-                description,
-                type,
-                bucket_id: bucketId || null
-                })
-                .eq('id', editingId)
+            // NOTA: Se hasLinkedChildren è true, amount, date e type non sono modificabili da UI, ma li passiamo.
+            await supabase.from('transactions').update({ 
+                amount: finalAmount, 
+                category_id: categoryId || null, 
+                date: new Date(date).toISOString(), 
+                description, 
+                type, 
+                bucket_id: bucketId || null 
+            }).eq('id', editingId)
           } else {
             // New Transaction
-            
-            // Se è una spesa da un bucket, scala il bucket
             if (type === 'expense' && bucketId) {
                 const { data: buck } = await supabase.from('buckets').select('current_balance').eq('id', bucketId).single()
-                if (buck) {
-                    await supabase.from('buckets').update({ current_balance: (buck.current_balance || 0) - amountVal }).eq('id', bucketId)
-                }
+                if (buck) await supabase.from('buckets').update({ current_balance: (buck.current_balance || 0) - amountVal }).eq('id', bucketId)
             }
 
-            // Inserisci Transazione Principale
-            const { data: newTx, error: txError } = await supabase
-                .from('transactions')
-                .insert({
-                user_id: user.id,
-                amount: finalAmount,
-                category_id: categoryId || null,
-                date: new Date(date).toISOString(),
-                description,
-                type,
-                bucket_id: bucketId || null,
-                is_work_related: false, // Default
-                })
-                .select()
-                .single()
-
+            const { data: newTx, error: txError } = await supabase.from('transactions').insert({ 
+                user_id: user.id, 
+                amount: finalAmount, 
+                category_id: categoryId || null, 
+                date: new Date(date).toISOString(), 
+                description, 
+                type, 
+                bucket_id: bucketId || null, 
+                is_work_related: false 
+            }).select().single()
+            
             if (txError) throw txError
 
-            // --- LOGICA P.IVA (SOLO INCOME) ---
             let distributableAmount = amountVal
 
             if (type === 'income' && isInvoice && taxCalculations && autoSaveTaxes) {
-                // 1. Trova/Crea Bucket Fiscali
                 const inpsBucketId = await getOrCreateBucket(user.id, 'Aliquota INPS')
                 const taxBucketId = await getOrCreateBucket(user.id, 'Aliquota Imposta Sostitutiva')
-
-                // 2. Preleva i soldi (Aggiorna Bucket)
                 const { data: inpsB } = await supabase.from('buckets').select('current_balance').eq('id', inpsBucketId).single()
                 const { data: taxB } = await supabase.from('buckets').select('current_balance').eq('id', taxBucketId).single()
-
+                
                 await supabase.from('buckets').update({ current_balance: (inpsB?.current_balance || 0) + taxCalculations.inps }).eq('id', inpsBucketId)
                 await supabase.from('buckets').update({ current_balance: (taxB?.current_balance || 0) + taxCalculations.tax }).eq('id', taxBucketId)
-
-                // 3. Crea Movimenti Transfer (Uscita dalla liquidità verso bucket)
+                
                 await supabase.from('transactions').insert([
-                    {
-                        user_id: user.id,
-                        amount: -Math.abs(taxCalculations.inps),
-                        type: 'transfer',
-                        description: `Accantonamento INPS (Fattura)`,
-                        date: new Date(date).toISOString(),
-                        bucket_id: inpsBucketId
-                    },
-                    {
-                        user_id: user.id,
-                        amount: -Math.abs(taxCalculations.tax),
-                        type: 'transfer',
-                        description: `Accantonamento Tasse (Fattura)`,
-                        date: new Date(date).toISOString(),
-                        bucket_id: taxBucketId
-                    }
+                    { user_id: user.id, amount: -Math.abs(taxCalculations.inps), type: 'transfer', description: `Accantonamento INPS (Fattura)`, date: new Date(date).toISOString(), bucket_id: inpsBucketId, created_at: newTx.created_at }, // Sync time
+                    { user_id: user.id, amount: -Math.abs(taxCalculations.tax), type: 'transfer', description: `Accantonamento Tasse (Fattura)`, date: new Date(date).toISOString(), bucket_id: taxBucketId, created_at: newTx.created_at }
                 ])
-
-                // 4. Aggiorna il netto distribuibile per i risparmi
                 distributableAmount = taxCalculations.net
             }
 
-            // --- LOGICA AUTO-SPLIT (RISPARMI) ---
-            // Se attiva, usa il netto (se P.IVA applicata) o il lordo (se normale)
             if (type === 'income' && applyAutoSplit && newTx) {
                 await handleAutoSplitLogic(user.id, distributableAmount, new Date(date).toISOString())
             }
           }
       }
-
       onSuccess()
       onClose()
-    } catch (error: any) {
-      alert(error.message)
-    } finally {
-      setLoading(false)
-    }
+    } catch (error: any) { alert(error.message) } finally { setLoading(false) }
   }
 
   if (!isOpen) return null
@@ -418,90 +323,58 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
   }
 
   return (
-    <div 
-        className="fixed inset-0 bg-black/60 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 backdrop-blur-sm animate-in fade-in"
-        onClick={onClose}
-    >
-      <div 
-        className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl max-h-[90vh] flex flex-col shadow-2xl animate-in slide-in-from-bottom-10 duration-300"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <div className="fixed inset-0 bg-black/60 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 backdrop-blur-sm animate-in fade-in" onClick={onClose}>
+      <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl max-h-[90vh] flex flex-col shadow-2xl animate-in slide-in-from-bottom-10 duration-300" onClick={(e) => e.stopPropagation()}>
         
-        {/* Header */}
         <div className="shrink-0 bg-white border-b border-gray-100 px-6 py-4 flex items-center justify-between rounded-t-3xl sm:rounded-t-3xl z-10">
-          <h2 className="text-lg font-bold text-gray-900">
-            {editingId ? 'Modifica' : 'Nuova Transazione'}
-          </h2>
-          <button onClick={onClose} className="p-2 bg-gray-100 hover:bg-gray-200 rounded-full transition-colors">
-            <X className="w-5 h-5 text-gray-600" />
-          </button>
+          <h2 className="text-lg font-bold text-gray-900">{editingId ? 'Modifica' : 'Nuova Transazione'}</h2>
+          <button onClick={onClose} className="p-2 bg-gray-100 hover:bg-gray-200 rounded-full transition-colors"><X className="w-5 h-5 text-gray-600" /></button>
         </div>
 
-        {/* Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
             <form id="transaction-form" onSubmit={handleSubmit} className="space-y-6">
             
-            {/* Type Selector */}
+            {editingId && hasLinkedChildren && (
+                <div className="bg-amber-50 p-4 rounded-2xl border border-amber-100 flex gap-3 text-xs text-amber-800 animate-in fade-in slide-in-from-top-2">
+                    <AlertTriangle className="w-5 h-5 shrink-0 text-amber-600" />
+                    <div>
+                        <p className="font-bold text-amber-900 mb-1">Modifica Limitata</p>
+                        <p className="leading-relaxed opacity-90">
+                            Questa transazione ha generato movimenti automatici (tasse, salvadanai). 
+                            Importo, Categoria, Data e Tipo non sono modificabili per non rompere i collegamenti.
+                            <br/><br/>
+                            <strong>Per modifiche sostanziali:</strong> Elimina e ricrea.
+                        </p>
+                    </div>
+                </div>
+            )}
+
             <div className="grid grid-cols-3 gap-2">
-                <button type="button" onClick={() => setType('expense')} className={cn("flex flex-col items-center justify-center py-3 rounded-2xl border-2 transition-all gap-1", getActiveTabClass('expense'))}>
-                <TrendingDown className="w-5 h-5" />
-                <span className="text-xs font-bold">Uscita</span>
-                </button>
-                <button type="button" onClick={() => setType('income')} className={cn("flex flex-col items-center justify-center py-3 rounded-2xl border-2 transition-all gap-1", getActiveTabClass('income'))}>
-                <TrendingUp className="w-5 h-5" />
-                <span className="text-xs font-bold">Entrata</span>
-                </button>
-                <button type="button" onClick={() => setType('transfer')} className={cn("flex flex-col items-center justify-center py-3 rounded-2xl border-2 transition-all gap-1", getActiveTabClass('transfer'))}>
-                <ArrowRightLeft className="w-5 h-5" />
-                <span className="text-xs font-bold">Transfer</span>
-                </button>
+                <button type="button" onClick={() => handleTypeChange('expense')} disabled={!!editingId && hasLinkedChildren} className={cn("flex flex-col items-center justify-center py-3 rounded-2xl border-2 transition-all gap-1", getActiveTabClass('expense'), editingId && hasLinkedChildren && "opacity-50 cursor-not-allowed")}><TrendingDown className="w-5 h-5" /><span className="text-xs font-bold">Uscita</span></button>
+                <button type="button" onClick={() => handleTypeChange('income')} disabled={!!editingId && hasLinkedChildren} className={cn("flex flex-col items-center justify-center py-3 rounded-2xl border-2 transition-all gap-1", getActiveTabClass('income'), editingId && hasLinkedChildren && "opacity-50 cursor-not-allowed")}><TrendingUp className="w-5 h-5" /><span className="text-xs font-bold">Entrata</span></button>
+                <button type="button" onClick={() => handleTypeChange('transfer')} disabled={!!editingId && hasLinkedChildren} className={cn("flex flex-col items-center justify-center py-3 rounded-2xl border-2 transition-all gap-1", getActiveTabClass('transfer'), editingId && hasLinkedChildren && "opacity-50 cursor-not-allowed")}><ArrowRightLeft className="w-5 h-5" /><span className="text-xs font-bold">Transfer</span></button>
             </div>
 
-            {/* Amount */}
             <div className="relative">
                 <label className="text-xs font-bold text-gray-400 uppercase ml-1 mb-1 block">Importo</label>
                 <div className="relative flex items-center">
                     <span className="absolute left-4 text-3xl font-bold text-gray-300">€</span>
-                    <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                    className="w-full pl-10 pr-4 py-4 text-4xl font-bold text-gray-900 bg-gray-50 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all placeholder:text-gray-200"
-                    placeholder="0.00"
-                    required
-                    />
+                    <input type="number" step="0.01" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} disabled={!!editingId && hasLinkedChildren} className={cn("w-full pl-10 pr-4 py-4 text-4xl font-bold text-gray-900 bg-gray-50 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all placeholder:text-gray-200", editingId && hasLinkedChildren && "opacity-50 cursor-not-allowed bg-gray-100 text-gray-500")} placeholder="0.00" required />
                 </div>
             </div>
 
             <div className="space-y-4">
-                {/* Category (Filtered by Type & Improved Visual) */}
                 {type !== 'transfer' && (
                 <div>
                     <label className="text-xs font-bold text-gray-400 uppercase ml-1 mb-1 block">Categoria</label>
                     <div className="relative">
                         <PieChart className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                        <select
-                            value={categoryId}
-                            onChange={(e) => setCategoryId(e.target.value)}
-                            required
-                            className="w-full pl-12 pr-4 py-3.5 bg-gray-50 text-gray-900 font-medium rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white appearance-none"
-                        >
+                        <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} required disabled={!!editingId && hasLinkedChildren} className={cn("w-full pl-12 pr-4 py-3.5 bg-gray-50 text-gray-900 font-medium rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white appearance-none", editingId && hasLinkedChildren && "opacity-50 cursor-not-allowed bg-gray-100")}>
                             <option value="">Seleziona...</option>
-                            {/* FIX: Filtraggio per tipo e rimozione OptGroup */}
-                            {categories
-                                .filter(cat => cat.type === type)
-                                .map((cat) => (
+                            {categories.filter(cat => cat.type === type).map((cat) => (
                                     <>
-                                        <option key={cat.id} value={cat.id} className="font-bold text-black">
-                                            {cat.name}
-                                        </option>
-                                        {cat.children?.map(child => (
-                                            <option key={child.id} value={child.id}>
-                                                &nbsp;&nbsp;&nbsp;&nbsp;{child.name}
-                                            </option>
-                                        ))}
+                                        <option key={cat.id} value={cat.id} className="font-bold text-black">{cat.name}</option>
+                                        {cat.children?.map(child => <option key={child.id} value={child.id}>&nbsp;&nbsp;&nbsp;&nbsp;{child.name}</option>)}
                                     </>
                                 ))
                             }
@@ -510,35 +383,20 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                 </div>
                 )}
 
-                {/* Transfer Fields */}
                 {type === 'transfer' && (
                     <div className="p-4 bg-blue-50 rounded-2xl space-y-4 border border-blue-100">
                         <div>
                             <label className="text-xs font-bold text-blue-400 uppercase ml-1 mb-1 block">Da (Sorgente)</label>
-                            <select
-                                value={transferSource}
-                                onChange={(e) => setTransferSource(e.target.value)}
-                                className="w-full px-4 py-3 bg-white text-gray-900 font-medium rounded-xl border-none outline-none focus:ring-2 focus:ring-blue-500"
-                            >
+                            <select value={transferSource} onChange={(e) => setTransferSource(e.target.value)} disabled={!!editingId} className={cn("w-full px-4 py-3 bg-white text-gray-900 font-medium rounded-xl border-none outline-none focus:ring-2 focus:ring-blue-500", editingId && "opacity-70 cursor-not-allowed")}>
                                 <option value="">Seleziona...</option>
                                 <option value="liquidity">Liquidità (Conto Corrente)</option>
                                 {buckets.map(b => <option key={b.id} value={b.id}>Salv.: {b.name} (€{b.current_balance})</option>)}
                             </select>
                         </div>
-                        
-                        <div className="flex justify-center -my-2 relative z-10">
-                            <div className="bg-white p-1.5 rounded-full shadow-sm border border-gray-100">
-                                <ArrowRightLeft className="w-4 h-4 text-blue-500" />
-                            </div>
-                        </div>
-
+                        <div className="flex justify-center -my-2 relative z-10"><div className="bg-white p-1.5 rounded-full shadow-sm border border-gray-100"><ArrowRightLeft className="w-4 h-4 text-blue-500" /></div></div>
                         <div>
                             <label className="text-xs font-bold text-blue-400 uppercase ml-1 mb-1 block">Verso (Destinazione)</label>
-                            <select
-                                value={transferDestination}
-                                onChange={(e) => setTransferDestination(e.target.value)}
-                                className="w-full px-4 py-3 bg-white text-gray-900 font-medium rounded-xl border-none outline-none focus:ring-2 focus:ring-blue-500"
-                            >
+                            <select value={transferDestination} onChange={(e) => setTransferDestination(e.target.value)} disabled={!!editingId} className={cn("w-full px-4 py-3 bg-white text-gray-900 font-medium rounded-xl border-none outline-none focus:ring-2 focus:ring-blue-500", editingId && "opacity-70 cursor-not-allowed")}>
                                 <option value="">Seleziona...</option>
                                 {transferSource !== 'liquidity' && <option value="liquidity">Liquidità (Conto Corrente)</option>}
                                 {buckets.filter(b => b.id !== transferSource).map(b => <option key={b.id} value={b.id}>Salv.: {b.name} (€{b.current_balance})</option>)}
@@ -547,123 +405,70 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                     </div>
                 )}
 
-                {/* Date */}
                 <div>
                     <label className="text-xs font-bold text-gray-400 uppercase ml-1 mb-1 block">Data</label>
                     <div className="relative">
                         <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full pl-12 pr-4 py-3.5 bg-gray-50 text-gray-900 font-medium rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white" required />
+                        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} disabled={!!editingId && hasLinkedChildren} className={cn("w-full pl-12 pr-4 py-3.5 bg-gray-50 text-gray-900 font-medium rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white", editingId && hasLinkedChildren && "opacity-50 cursor-not-allowed bg-gray-100")} required />
                     </div>
                 </div>
 
-                {/* Description */}
                 <div>
                 <label className="text-xs font-bold text-gray-400 uppercase ml-1 mb-1 block">Descrizione</label>
                 <div className="relative">
                     <AlignLeft className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                    <input
-                        type="text"
-                        value={description}
-                        onChange={(e) => setDescription(e.target.value)}
-                        className="w-full pl-12 pr-4 py-3.5 bg-gray-50 text-gray-900 font-medium rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all"
-                        placeholder="Note opzionali..."
-                    />
+                    <input type="text" value={description} onChange={(e) => setDescription(e.target.value)} className="w-full pl-12 pr-4 py-3.5 bg-gray-50 text-gray-900 font-medium rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all" placeholder="Note opzionali..." />
                 </div>
                 </div>
 
-                {/* --- SEZIONE P.IVA (SOLO INCOME) --- */}
-                {type === 'income' && taxProfile && (
+                {type === 'income' && taxProfile && !editingId && (
                     <div className="animate-in fade-in slide-in-from-top-2 space-y-4">
                         <div className="flex items-center justify-between bg-purple-50 p-3 rounded-xl border border-purple-100">
                             <div className="flex items-center gap-3">
-                                <div className="p-2 bg-white rounded-lg text-purple-600 shadow-sm">
-                                    <Briefcase className="w-4 h-4" />
-                                </div>
-                                <div>
-                                    <p className="text-sm font-bold text-purple-900">Fattura P.IVA</p>
-                                    <p className="text-[10px] text-purple-600">Calcola imposte forfettarie</p>
-                                </div>
+                                <div className="p-2 bg-white rounded-lg text-purple-600 shadow-sm"><Briefcase className="w-4 h-4" /></div>
+                                <div><p className="text-sm font-bold text-purple-900">Fattura P.IVA</p><p className="text-[10px] text-purple-600">Calcola imposte forfettarie</p></div>
                             </div>
                             <label className="relative inline-flex items-center cursor-pointer">
-                                <input 
-                                    type="checkbox" 
-                                    className="sr-only peer" 
-                                    checked={isInvoice} 
-                                    onChange={() => setIsInvoice(!isInvoice)} 
-                                />
+                                <input type="checkbox" className="sr-only peer" checked={isInvoice} onChange={() => setIsInvoice(!isInvoice)} />
                                 <div className="w-11 h-6 bg-purple-200 peer-focus:outline-none rounded-full peer peer-checked:bg-purple-600 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all"></div>
                             </label>
                         </div>
 
                         {isInvoice && taxCalculations && (
                             <div className="bg-white border-2 border-purple-100 rounded-2xl p-4 space-y-3 shadow-sm animate-in zoom-in-95">
-                                <div className="flex justify-between items-center pb-2 border-b border-gray-50">
-                                    <span className="text-xs text-gray-500">Imponibile ({taxProfile.tax_profitability_coeff}%)</span>
-                                    <span className="font-bold text-gray-700">{formatCurrency(taxCalculations.taxable)}</span>
-                                </div>
+                                <div className="flex justify-between items-center pb-2 border-b border-gray-50"><span className="text-xs text-gray-500">Imponibile ({taxProfile.tax_profitability_coeff}%)</span><span className="font-bold text-gray-700">{formatCurrency(taxCalculations.taxable)}</span></div>
                                 <div className="grid grid-cols-2 gap-4">
-                                    <div>
-                                        <span className="text-[10px] uppercase font-bold text-gray-400 block mb-1">INPS ({taxProfile.tax_inps_rate}%)</span>
-                                        <span className="text-sm font-bold text-rose-500 block">-{formatCurrency(taxCalculations.inps)}</span>
-                                    </div>
-                                    <div>
-                                        <span className="text-[10px] uppercase font-bold text-gray-400 block mb-1">Tasse ({taxProfile.tax_flat_rate}%)</span>
-                                        <span className="text-sm font-bold text-rose-500 block">-{formatCurrency(taxCalculations.tax)}</span>
-                                    </div>
+                                    <div><span className="text-[10px] uppercase font-bold text-gray-400 block mb-1">INPS ({taxProfile.tax_inps_rate}%)</span><span className="text-sm font-bold text-rose-500 block">-{formatCurrency(taxCalculations.inps)}</span></div>
+                                    <div><span className="text-[10px] uppercase font-bold text-gray-400 block mb-1">Tasse ({taxProfile.tax_flat_rate}%)</span><span className="text-sm font-bold text-rose-500 block">-{formatCurrency(taxCalculations.tax)}</span></div>
                                 </div>
-                                <div className="pt-2 border-t border-purple-50 flex justify-between items-end">
-                                    <span className="text-xs font-bold text-purple-600 uppercase">Netto Reale</span>
-                                    <span className="text-xl font-black text-purple-700">{formatCurrency(taxCalculations.net)}</span>
-                                </div>
-
+                                <div className="pt-2 border-t border-purple-50 flex justify-between items-end"><span className="text-xs font-bold text-purple-600 uppercase">Netto Reale</span><span className="text-xl font-black text-purple-700">{formatCurrency(taxCalculations.net)}</span></div>
                                 <div className="flex items-center gap-2 mt-2 pt-2">
-                                    <input 
-                                        type="checkbox" 
-                                        id="auto-tax" 
-                                        checked={autoSaveTaxes} 
-                                        onChange={(e) => setAutoSaveTaxes(e.target.checked)}
-                                        className="w-4 h-4 rounded text-purple-600 focus:ring-purple-500 border-gray-300"
-                                    />
-                                    <label htmlFor="auto-tax" className="text-xs text-gray-600">
-                                        Accantona automaticamente INPS e Tasse nei salvadanai
-                                    </label>
+                                    <input type="checkbox" id="auto-tax" checked={autoSaveTaxes} onChange={(e) => setAutoSaveTaxes(e.target.checked)} className="w-4 h-4 rounded text-purple-600 focus:ring-purple-500 border-gray-300" />
+                                    <label htmlFor="auto-tax" className="text-xs text-gray-600">Accantona automaticamente INPS e Tasse nei salvadanai</label>
                                 </div>
                             </div>
                         )}
                     </div>
                 )}
 
-                {/* EXPENSE: Bucket Selector */}
                 {type === 'expense' && !editingId && buckets.length > 0 && (
                     <div className="flex items-center gap-3 p-3 rounded-xl bg-gray-50 border border-gray-100">
                         <PieChart className="w-5 h-5 text-gray-400" />
                         <div className="flex-1">
                             <label className="text-xs font-bold text-gray-700 block">Preleva da Salvadanaio</label>
-                            <select
-                                value={bucketId}
-                                onChange={(e) => setBucketId(e.target.value)}
-                                className="w-full mt-1 bg-transparent text-sm text-gray-600 outline-none"
-                            >
+                            <select value={bucketId} onChange={(e) => setBucketId(e.target.value)} className="w-full mt-1 bg-transparent text-sm text-gray-600 outline-none">
                                 <option value="">Nessuno (Usa Liquidità)</option>
-                                {buckets.map((b) => (
-                                    <option key={b.id} value={b.id}>{b.name} ({formatCurrency(b.current_balance || 0)})</option>
-                                ))}
+                                {buckets.map((b) => <option key={b.id} value={b.id}>{b.name} ({formatCurrency(b.current_balance || 0)})</option>)}
                             </select>
                         </div>
                     </div>
                 )}
 
-                {/* Auto Split Switch: FILTRO AGGIUNTO */}
                 {type === 'income' && !editingId && buckets.some(b => b.distribution_percentage > 0 && !['Aliquota INPS', 'Aliquota Imposta Sostitutiva'].includes(b.name)) && (
                     <div className="flex items-center justify-between p-3 rounded-xl bg-blue-50 border border-blue-100">
                         <div className="flex items-center gap-3">
                             <PiggyBank className="w-5 h-5 text-blue-600" />
-                            <div>
-                                <p className="text-xs font-bold text-blue-900">Divisione Automatica</p>
-                                <p className="text-[10px] text-blue-600">
-                                    Distribuisci {isInvoice ? 'il netto' : 'il totale'} nei salvadanai
-                                </p>
-                            </div>
+                            <div><p className="text-xs font-bold text-blue-900">Divisione Automatica</p><p className="text-[10px] text-blue-600">Distribuisci {isInvoice ? 'il netto' : 'il totale'} nei salvadanai</p></div>
                         </div>
                         <label className="relative inline-flex items-center cursor-pointer">
                             <input type="checkbox" className="sr-only peer" checked={applyAutoSplit} onChange={() => setApplyAutoSplit(!applyAutoSplit)} />
@@ -675,19 +480,9 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
             </form>
         </div>
 
-        {/* Footer Actions */}
         <div className="shrink-0 p-6 border-t border-gray-100 bg-white rounded-b-3xl sm:rounded-b-3xl">
-            <button
-                type="submit"
-                form="transaction-form"
-                disabled={loading}
-                className="w-full py-4 bg-gray-900 text-white rounded-2xl font-bold text-lg shadow-xl shadow-gray-200 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                style={{ backgroundColor: primaryColor.startsWith('#') ? primaryColor : undefined }}
-            >
-                {loading ? 'Salvataggio...' : 'Salva Transazione'}
-            </button>
+            <button type="submit" form="transaction-form" disabled={loading} className="w-full py-4 bg-gray-900 text-white rounded-2xl font-bold text-lg shadow-xl shadow-gray-200 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed" style={{ backgroundColor: primaryColor.startsWith('#') ? primaryColor : undefined }}>{loading ? 'Salvataggio...' : editingId ? 'Salva Modifiche' : 'Salva Transazione'}</button>
         </div>
-
       </div>
     </div>
   )

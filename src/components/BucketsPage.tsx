@@ -284,7 +284,8 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
     if (!confirm('Sei sicuro di voler eliminare questo salvadanaio?')) return
 
     try {
-      const { error: unlinkError } = await supabase.from('transactions').update({ bucket_id: null }).eq('bucket_id', bucketId)
+      // PROTEZIONE NET-WORTH: Segniamo 'is_from_bucket' a true prima di sganciare il vincolo
+      const { error: unlinkError } = await supabase.from('transactions').update({ bucket_id: null, is_from_bucket: true }).eq('bucket_id', bucketId)
       if (unlinkError) throw unlinkError
       const { error } = await supabase.from('buckets').delete().eq('id', bucketId)
       if (error) throw error

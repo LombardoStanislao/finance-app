@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { TrendingUp, TrendingDown, Wallet, PiggyBank, Trash2, Settings, ArrowRightLeft, AlertTriangle, CheckCircle2, ShoppingBag, BookOpen, Eye, EyeOff } from 'lucide-react'
 import { supabase, type Transaction, type Category } from '../lib/supabase'
-import { formatCurrency, formatDate, cn } from '../lib/utils'
+import { formatCurrency, formatDate, cn, calculateLiquidity } from '../lib/utils'
 import TransactionForm from './TransactionForm'
 import { usePrivacy } from '../context/PrivacyContext'
 
@@ -28,7 +28,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
   const [monthExpenses, setMonthExpenses] = useState<number>(0)
   const [recentTransactions, setRecentTransactions] = useState<Transaction[]>([])
   const [budgetProgress, setBudgetProgress] = useState<BudgetProgress[]>([])
-  const [categories, setCategories] = useState<Category[]>([]) 
+  const [categories, setCategories] = useState<Category[]>([])
   const [loading, setLoading] = useState(true)
   const [displayName, setDisplayName] = useState<string>('')
   const [isTransactionFormOpen, setIsTransactionFormOpen] = useState(false)
@@ -39,9 +39,9 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
 
   // Helper per nascondere i dati
   const hide = (value: number | string, isCurrency = true) => {
-      if (isPrivacyEnabled) return '****'
-      if (typeof value === 'number' && isCurrency) return formatCurrency(value)
-      return value
+    if (isPrivacyEnabled) return '****'
+    if (typeof value === 'number' && isCurrency) return formatCurrency(value)
+    return value
   }
 
   useEffect(() => {
@@ -77,13 +77,13 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
       setCategories(categoriesList)
 
       // FILTRO LISTA
-      const filteredRecent = transactions.filter(t => 
+      const filteredRecent = transactions.filter(t =>
         !t.description?.startsWith('Distribuzione automatica')
       )
       setRecentTransactions(filteredRecent.slice(0, 5))
 
       // 2. Calcoli Liquidità
-      const totalLiquidity = transactions.reduce((sum, t) => sum + (Number(t.amount) || 0), 0)
+      const totalLiquidity = calculateLiquidity(transactions)
       setLiquidity(totalLiquidity)
 
       // 3. Totali Patrimonio
@@ -105,9 +105,9 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
         const isTradingPL = t.investment_id !== null && (t.type === 'income' || t.type === 'expense')
 
         if (d >= monthStart && d <= monthEnd && !isTradingPL) {
-            const val = Number(t.amount) || 0
-            if (t.type === 'income') mIncome += val
-            else if (t.type === 'expense') mExpenses += Math.abs(val)
+          const val = Number(t.amount) || 0
+          if (t.type === 'income') mIncome += val
+          else if (t.type === 'expense') mExpenses += Math.abs(val)
         }
       })
       setMonthIncome(mIncome)
@@ -120,24 +120,32 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
       if (categoriesWithBudget.length > 0) {
         const expensesByCat = new Map<string, number>()
         transactions.forEach(t => {
-            const d = new Date(t.date).toISOString()
-            const isTradingPL = t.investment_id !== null
-            
-            if (t.type === 'expense' && t.category_id && d >= monthStart && d <= monthEnd && !isTradingPL) {
-                const current = expensesByCat.get(t.category_id) || 0
-                expensesByCat.set(t.category_id, current + Math.abs(Number(t.amount)))
-            }
+          const d = new Date(t.date).toISOString()
+          const isTradingPL = t.investment_id !== null
+
+          if (t.type === 'expense' && t.category_id && d >= monthStart && d <= monthEnd && !isTradingPL) {
+            const current = expensesByCat.get(t.category_id) || 0
+            expensesByCat.set(t.category_id, current + Math.abs(Number(t.amount)))
+          }
         })
 
         categoriesWithBudget.forEach(c => {
-            const spent = expensesByCat.get(c.id) || 0
-            const limit = Number(c.budget_limit) || 0
-            budgetsData.push({
-                category: c,
-                spent,
-                remaining: limit - spent,
-                percentage: (spent / limit) * 100
-            })
+          // Conta le spese della categoria padre e di tutte le sue SOTTO-CATEGORIE (se questa è una root)
+          let spent = expensesByCat.get(c.id) || 0
+
+          // Trova eventuali figli
+          const children = categoriesList.filter(cat => cat.parent_id === c.id)
+          children.forEach(child => {
+            spent += (expensesByCat.get(child.id) || 0)
+          })
+
+          const limit = Number(c.budget_limit) || 0
+          budgetsData.push({
+            category: c,
+            spent,
+            remaining: limit - spent,
+            percentage: (spent / limit) * 100
+          })
         })
         budgetsData.sort((a, b) => b.percentage - a.percentage)
       }
@@ -155,70 +163,103 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
     e.stopPropagation()
 
     if (transaction.type === 'transfer' && transaction.bucket_id) {
-        const { data: bucketCheck } = await supabase.from('buckets').select('name').eq('id', transaction.bucket_id).single()
-        if (bucketCheck && ['Aliquota INPS', 'Aliquota Imposta Sostitutiva'].includes(bucketCheck.name)) {
-            alert("🚫 AZIONE BLOCCATA\n\nNon puoi eliminare manualmente un singolo accantonamento fiscale.\n\nPer annullare questa operazione, devi eliminare la transazione di Entrata (Fattura) originale che l'ha generato.")
-            return
-        }
+      const { data: bucketCheck } = await supabase.from('buckets').select('name').eq('id', transaction.bucket_id).single()
+      if (bucketCheck && ['Aliquota INPS', 'Aliquota Imposta Sostitutiva'].includes(bucketCheck.name)) {
+        alert("🚫 AZIONE BLOCCATA\n\nNon puoi eliminare manualmente un singolo accantonamento fiscale.\n\nPer annullare questa operazione, devi eliminare la transazione di Entrata (Fattura) originale che l'ha generato.")
+        return
+      }
     }
 
     if (!window.confirm('Eliminare questa transazione? L\'operazione annullerà anche eventuali movimenti collegati.')) return
 
     try {
-        const { data: { user } } = await supabase.auth.getUser()
-        if(!user) return
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
 
-        if (transaction.investment_id) {
-             const { data: investment } = await supabase.from('investments').select('*').eq('id', transaction.investment_id).single()
-             if (investment) {
-                 const qtyChange = (transaction as any).asset_quantity || 0 
-                 const newQty = Math.max(0, (investment.quantity || 0) - qtyChange)
-                 let deltaInvested = 0
-                 if (transaction.type === 'transfer') deltaInvested = transaction.amount 
-                 const newInvested = Math.max(0, (investment.invested_amount || 0) + deltaInvested)
-                 let newCurrentValue = investment.current_value
-                 if ((investment.quantity || 0) > 0) {
-                     const price = investment.current_value / investment.quantity
-                     newCurrentValue = price * newQty
-                 }
-                 await supabase.from('investments').update({ quantity: newQty, invested_amount: newInvested, current_value: newCurrentValue }).eq('id', investment.id)
-             }
-        }
+      // 2. GESTIONE INVESTIMENTO (Atomic Group Delete)
+      if (transaction.investment_id) {
+        const { data: investment } = await supabase.from('investments').select('*').eq('id', transaction.investment_id).single()
+        if (investment) {
+          const txTime = new Date(transaction.created_at || transaction.date).getTime()
+          const timeStart = new Date(txTime - 2000).toISOString()
+          const timeEnd = new Date(txTime + 2000).toISOString()
 
-        if (transaction.type === 'income') {
-            const txTime = new Date(transaction.created_at).getTime()
-            const timeStart = new Date(txTime - 5000).toISOString()
-            const timeEnd = new Date(txTime + 5000).toISOString()
-            const { data: children } = await supabase.from('transactions').select('*').eq('user_id', user.id).eq('type', 'transfer').ilike('description', 'Distribuzione automatica%').gte('created_at', timeStart).lte('created_at', timeEnd)
-            if (children) {
-                for (const child of children) {
-                    if (child.bucket_id) {
-                        const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', child.bucket_id).single()
-                        if (bucket) await supabase.from('buckets').update({ current_balance: Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount)) }).eq('id', child.bucket_id)
-                    }
-                    await supabase.from('transactions').delete().eq('id', child.id)
-                }
+          const { data: siblings } = await supabase.from('transactions')
+            .select('*')
+            .eq('user_id', user.id)
+            .eq('investment_id', investment.id)
+            .gte('created_at', timeStart)
+            .lte('created_at', timeEnd)
+
+          if (siblings && siblings.length > 0) {
+            let totalQtyToRevert = 0
+            let totalInvestedToRevert = 0
+
+            for (const sib of siblings) {
+                if (sib.type === 'transfer') totalInvestedToRevert += sib.amount
+                if ((sib as any).asset_quantity) totalQtyToRevert += (sib as any).asset_quantity
+                await supabase.from('transactions').delete().eq('id', sib.id) // Elimina direttamente qua
             }
-            const { data: taxChildren } = await supabase.from('transactions').select('*').eq('user_id', user.id).eq('type', 'transfer').ilike('description', 'Accantonamento % (Fattura)').gte('created_at', timeStart).lte('created_at', timeEnd)
-            if (taxChildren) {
-                for (const child of taxChildren) {
-                    if (child.bucket_id) {
-                        const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', child.bucket_id).single()
-                        if (bucket) {
-                            const newBalance = Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount))
-                            await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', child.bucket_id)
-                        }
-                    }
-                    await supabase.from('transactions').delete().eq('id', child.id)
-                }
-            }
-        } else if ((transaction.type === 'expense' || transaction.type === 'transfer') && transaction.bucket_id) {
-            const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', transaction.bucket_id).single()
-            if (bucket) await supabase.from('buckets').update({ current_balance: (bucket.current_balance || 0) + Math.abs(transaction.amount) }).eq('id', transaction.bucket_id)
-        }
 
-        await supabase.from('transactions').delete().eq('id', transaction.id)
-        fetchData()
+            const currentQty = investment.quantity || 0
+            const currentInvested = investment.invested_amount || 0
+            const newQty = Math.max(0, currentQty - totalQtyToRevert)
+            const newInvested = Math.max(0, currentInvested + totalInvestedToRevert)
+            
+            let newCurrentValue = 0
+            if (currentQty > 0) {
+                const pricePerShare = investment.current_value / currentQty
+                newCurrentValue = (Math.round((pricePerShare * newQty) * 100) / 100)
+            } else if (newQty > 0) {
+                newCurrentValue = newInvested
+            }
+
+            await supabase.from('investments').update({
+                quantity: newQty,
+                invested_amount: newInvested,
+                current_value: newCurrentValue
+            }).eq('id', investment.id)
+
+            fetchData()
+            return // Usciamo per non triggerare altra logica di cancellazione o causare crash
+          }
+        }
+      }
+
+      if (transaction.type === 'income') {
+        const txTime = new Date(transaction.created_at).getTime()
+        const timeStart = new Date(txTime - 5000).toISOString()
+        const timeEnd = new Date(txTime + 5000).toISOString()
+        const { data: children } = await supabase.from('transactions').select('*').eq('user_id', user.id).eq('type', 'transfer').ilike('description', 'Distribuzione automatica%').gte('created_at', timeStart).lte('created_at', timeEnd)
+        if (children) {
+          for (const child of children) {
+            if (child.bucket_id) {
+              const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', child.bucket_id).single()
+              if (bucket) await supabase.from('buckets').update({ current_balance: Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount)) }).eq('id', child.bucket_id)
+            }
+            await supabase.from('transactions').delete().eq('id', child.id)
+          }
+        }
+        const { data: taxChildren } = await supabase.from('transactions').select('*').eq('user_id', user.id).eq('type', 'transfer').ilike('description', 'Accantonamento % (Fattura)').gte('created_at', timeStart).lte('created_at', timeEnd)
+        if (taxChildren) {
+          for (const child of taxChildren) {
+            if (child.bucket_id) {
+              const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', child.bucket_id).single()
+              if (bucket) {
+                const newBalance = Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount))
+                await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', child.bucket_id)
+              }
+            }
+            await supabase.from('transactions').delete().eq('id', child.id)
+          }
+        }
+      } else if ((transaction.type === 'expense' || transaction.type === 'transfer') && transaction.bucket_id) {
+        const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', transaction.bucket_id).single()
+        if (bucket) await supabase.from('buckets').update({ current_balance: (bucket.current_balance || 0) + Math.abs(transaction.amount) }).eq('id', transaction.bucket_id)
+      }
+
+      await supabase.from('transactions').delete().eq('id', transaction.id)
+      fetchData()
     } catch (error) { console.error(error); alert('Errore durante l\'eliminazione') }
   }
 
@@ -231,67 +272,67 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
       {/* HEADER */}
       <div className="bg-white sticky top-0 z-20 border-b border-gray-100 px-4 py-4 flex items-center justify-between shadow-sm">
         <div>
-           <p className="text-xs text-gray-400 font-medium mb-0.5">Bentornato,</p>
-           <h1 className="text-xl font-bold text-gray-900 leading-none">{displayName}</h1>
+          <p className="text-xs text-gray-400 font-medium mb-0.5">Bentornato,</p>
+          <h1 className="text-xl font-bold text-gray-900 leading-none">{displayName}</h1>
         </div>
         <div className="flex gap-2">
-            {/* TASTO PRIVACY */}
-            <button onClick={togglePrivacy} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-600 border border-gray-100 active:scale-95 transition-transform">
-                {isPrivacyEnabled ? <EyeOff className="w-5 h-5" strokeWidth={2} /> : <Eye className="w-5 h-5" strokeWidth={2} />}
-            </button>
-            <button onClick={onOpenGuide} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-blue-600 border border-gray-100 active:scale-95 transition-transform"><BookOpen className="w-5 h-5" strokeWidth={2} /></button>
-            <button onClick={onOpenSettings} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-600 border border-gray-100 active:scale-95 transition-transform"><Settings className="w-5 h-5" strokeWidth={2} /></button>
+          {/* TASTO PRIVACY */}
+          <button onClick={togglePrivacy} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-600 border border-gray-100 active:scale-95 transition-transform">
+            {isPrivacyEnabled ? <EyeOff className="w-5 h-5" strokeWidth={2} /> : <Eye className="w-5 h-5" strokeWidth={2} />}
+          </button>
+          <button onClick={onOpenGuide} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-blue-600 border border-gray-100 active:scale-95 transition-transform"><BookOpen className="w-5 h-5" strokeWidth={2} /></button>
+          <button onClick={onOpenSettings} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-600 border border-gray-100 active:scale-95 transition-transform"><Settings className="w-5 h-5" strokeWidth={2} /></button>
         </div>
       </div>
 
       <div className="max-w-md mx-auto px-4 py-6 space-y-8">
-        
+
         {/* HERO CARD */}
-        <div 
-            className="rounded-3xl p-6 shadow-lg text-white relative overflow-hidden transition-colors duration-300"
-            style={{ backgroundColor: primaryColor, boxShadow: `0 20px 25px -5px ${primaryColor}40` }}
+        <div
+          className="rounded-3xl p-6 shadow-lg text-white relative overflow-hidden transition-colors duration-300"
+          style={{ backgroundColor: primaryColor, boxShadow: `0 20px 25px -5px ${primaryColor}40` }}
         >
-            <div className="absolute inset-0 bg-gradient-to-br from-white/10 to-black/10 pointer-events-none" />
-            <div className="absolute top-0 right-0 w-32 h-32 bg-white opacity-10 rounded-full -mr-10 -mt-10 blur-2xl"></div>
-            
-            <div className="relative z-10">
-                <div className="flex items-center gap-2 mb-2 opacity-90">
-                    <Wallet className="w-4 h-4" />
-                    <span className="text-xs font-bold uppercase tracking-wider">Patrimonio Totale</span>
-                </div>
-                <p className="text-4xl font-bold tracking-tight mb-6">{hide(netWorth)}</p>
-                
-                <div className="flex gap-3">
-                    <div className="flex-1 bg-white/10 backdrop-blur-sm rounded-xl p-3 border border-white/10">
-                        <div className="flex items-center gap-1.5 mb-1 text-white/90">
-                             <PiggyBank className="w-3.5 h-3.5" />
-                             <span className="text-[10px] font-bold uppercase">Liquidità</span>
-                        </div>
-                        <p className="font-semibold text-lg">{hide(liquidity)}</p>
-                    </div>
-                    <button onClick={onOpenInvestments} className="flex-1 bg-white/10 backdrop-blur-sm rounded-xl p-3 border border-white/10 text-left hover:bg-white/20 transition-colors">
-                        <div className="flex items-center gap-1.5 mb-1 text-white/90">
-                             <TrendingUp className="w-3.5 h-3.5" />
-                             <span className="text-[10px] font-bold uppercase">Investimenti</span>
-                        </div>
-                        <p className="font-semibold text-lg">{hide(investmentsTotal)}</p>
-                    </button>
-                </div>
+          <div className="absolute inset-0 bg-gradient-to-br from-white/10 to-black/10 pointer-events-none" />
+          <div className="absolute top-0 right-0 w-32 h-32 bg-white opacity-10 rounded-full -mr-10 -mt-10 blur-2xl"></div>
+
+          <div className="relative z-10">
+            <div className="flex items-center gap-2 mb-2 opacity-90">
+              <Wallet className="w-4 h-4" />
+              <span className="text-xs font-bold uppercase tracking-wider">Patrimonio Totale</span>
             </div>
+            <p className="text-4xl font-bold tracking-tight mb-6">{hide(netWorth)}</p>
+
+            <div className="flex gap-3">
+              <div className="flex-1 bg-white/10 backdrop-blur-sm rounded-xl p-3 border border-white/10">
+                <div className="flex items-center gap-1.5 mb-1 text-white/90">
+                  <PiggyBank className="w-3.5 h-3.5" />
+                  <span className="text-[10px] font-bold uppercase">Liquidità</span>
+                </div>
+                <p className="font-semibold text-lg">{hide(liquidity)}</p>
+              </div>
+              <button onClick={onOpenInvestments} className="flex-1 bg-white/10 backdrop-blur-sm rounded-xl p-3 border border-white/10 text-left hover:bg-white/20 transition-colors">
+                <div className="flex items-center gap-1.5 mb-1 text-white/90">
+                  <TrendingUp className="w-3.5 h-3.5" />
+                  <span className="text-[10px] font-bold uppercase">Investimenti</span>
+                </div>
+                <p className="font-semibold text-lg">{hide(investmentsTotal)}</p>
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* FLUSSO DEL MESE */}
         <div className="grid grid-cols-2 gap-4">
           <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
             <div className="w-8 h-8 rounded-full bg-emerald-50 flex items-center justify-center mb-3">
-               <TrendingUp className="w-4 h-4 text-emerald-600" />
+              <TrendingUp className="w-4 h-4 text-emerald-600" />
             </div>
             <p className="text-xs text-gray-500 font-medium uppercase mb-0.5">Entrate Mese</p>
             <p className="text-lg font-bold text-gray-900">{hide(monthIncome)}</p>
           </div>
           <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
             <div className="w-8 h-8 rounded-full bg-rose-50 flex items-center justify-center mb-3">
-               <TrendingDown className="w-4 h-4 text-rose-600" />
+              <TrendingDown className="w-4 h-4 text-rose-600" />
             </div>
             <p className="text-xs text-gray-500 font-medium uppercase mb-0.5">Uscite Mese</p>
             <p className="text-lg font-bold text-gray-900">{hide(monthExpenses)}</p>
@@ -302,8 +343,8 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
         {budgetProgress.length > 0 && (
           <div>
             <div className="flex items-center justify-between px-1 mb-3">
-               <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Stato Budget</h2>
-               <button onClick={onOpenSettings} className="text-xs font-bold text-blue-600">Gestisci</button>
+              <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Stato Budget</h2>
+              <button onClick={onOpenSettings} className="text-xs font-bold text-blue-600">Gestisci</button>
             </div>
             <div className="flex gap-3 overflow-x-auto pb-4 -mx-4 px-4 hide-scrollbar">
               {budgetProgress.map((budget) => {
@@ -317,33 +358,33 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                 return (
                   <div key={budget.category.id} className="min-w-[260px] bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex flex-col justify-between">
                     <div className="flex justify-between items-start mb-4">
-                        <div className="flex items-center gap-2">
-                            <div className="p-2 bg-gray-50 rounded-lg text-gray-500">
-                                <ShoppingBag className="w-4 h-4" />
-                            </div>
-                            <div>
-                                <p className="font-bold text-gray-900 text-sm">{budget.category.name}</p>
-                                <p className="text-[10px] text-gray-400 font-medium uppercase">Mensile</p>
-                            </div>
+                      <div className="flex items-center gap-2">
+                        <div className="p-2 bg-gray-50 rounded-lg text-gray-500">
+                          <ShoppingBag className="w-4 h-4" />
                         </div>
-                        <div className={cn("px-2 py-1 rounded-md text-[10px] font-bold uppercase flex items-center gap-1", statusColor)}>
-                            {statusIcon} {statusText}
+                        <div>
+                          <p className="font-bold text-gray-900 text-sm">{budget.category.name}</p>
+                          <p className="text-[10px] text-gray-400 font-medium uppercase">Mensile</p>
                         </div>
+                      </div>
+                      <div className={cn("px-2 py-1 rounded-md text-[10px] font-bold uppercase flex items-center gap-1", statusColor)}>
+                        {statusIcon} {statusText}
+                      </div>
                     </div>
                     <div>
-                        <div className="flex items-baseline gap-1 mb-2">
-                            <span className={cn("text-2xl font-bold", isOver ? "text-rose-600" : "text-gray-900")}>
-                                {hide(budget.remaining)}
-                            </span>
-                            <span className="text-xs text-gray-400 font-medium">rimanenti</span>
-                        </div>
-                        <div className="flex justify-between text-[10px] text-gray-400 mb-1.5 font-medium">
-                            <span>{hide(budget.spent)} spesi</span>
-                            <span>Limit {hide(Number(budget.category.budget_limit))}</span>
-                        </div>
-                        <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
-                            <div className={cn("h-full rounded-full transition-all duration-500", barColor)} style={{ width: `${Math.min(budget.percentage, 100)}%` }} />
-                        </div>
+                      <div className="flex items-baseline gap-1 mb-2">
+                        <span className={cn("text-2xl font-bold", isOver ? "text-rose-600" : "text-gray-900")}>
+                          {hide(budget.remaining)}
+                        </span>
+                        <span className="text-xs text-gray-400 font-medium">rimanenti</span>
+                      </div>
+                      <div className="flex justify-between text-[10px] text-gray-400 mb-1.5 font-medium">
+                        <span>{hide(budget.spent)} spesi</span>
+                        <span>Limit {hide(Number(budget.category.budget_limit))}</span>
+                      </div>
+                      <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
+                        <div className={cn("h-full rounded-full transition-all duration-500", barColor)} style={{ width: `${Math.min(budget.percentage, 100)}%` }} />
+                      </div>
                     </div>
                   </div>
                 )
@@ -357,43 +398,43 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
           <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-3 px-1">Attività Recente</h2>
           <div className="space-y-3">
             {recentTransactions.length === 0 ? (
-                <div className="text-center py-8 text-gray-400 text-sm bg-white rounded-2xl border border-dashed border-gray-100">
-                    Nessuna attività recente
-                </div>
+              <div className="text-center py-8 text-gray-400 text-sm bg-white rounded-2xl border border-dashed border-gray-100">
+                Nessuna attività recente
+              </div>
             ) : (
-                recentTransactions.map((t) => (
-                    <div key={t.id} onClick={() => { setEditingTransaction(t); setIsTransactionFormOpen(true) }} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex items-start justify-between active:scale-[0.99] transition-transform cursor-pointer">
-                    <div className="flex items-start gap-4 flex-1 min-w-0">
-                        <div className={cn("w-10 h-10 rounded-full flex items-center justify-center shrink-0 mt-1", t.type === 'income' ? "bg-emerald-50 text-emerald-600" : t.type === 'transfer' ? "bg-blue-50 text-blue-600" : "bg-rose-50 text-rose-600")}>
-                            {t.type === 'income' ? <TrendingUp className="w-5 h-5" /> : t.type === 'transfer' ? <ArrowRightLeft className="w-5 h-5" /> : <TrendingDown className="w-5 h-5" />}
-                        </div>
-                        <div className="flex-1 min-w-0 pr-2">
-                          <div className="flex flex-wrap items-center gap-2 mb-1">
-                              <h3 className="font-bold text-gray-900 leading-tight break-words">{t.description || (t.type === 'transfer' ? 'Trasferimento' : getCategoryName(t.category_id || ''))}</h3>
-                          </div>
-                          
-                          <div className="flex flex-wrap items-center gap-1.5 text-xs text-gray-400 font-medium">
-                              <span>{formatDate(t.date)}</span>
-                              {t.category_id && t.type !== 'transfer' && (
-                                <>
-                                  <span className="text-gray-300">•</span>
-                                  <span className="truncate max-w-[150px] text-gray-500">{getCategoryName(t.category_id)}</span>
-                                </>
-                              )}
-                              {t.investment_id && (
-                                  <span className="bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded text-[10px] font-bold">INV</span>
-                              )}
-                          </div>
-                        </div>
+              recentTransactions.map((t) => (
+                <div key={t.id} onClick={() => { setEditingTransaction(t); setIsTransactionFormOpen(true) }} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex items-start justify-between active:scale-[0.99] transition-transform cursor-pointer">
+                  <div className="flex items-start gap-4 flex-1 min-w-0">
+                    <div className={cn("w-10 h-10 rounded-full flex items-center justify-center shrink-0 mt-1", t.type === 'income' ? "bg-emerald-50 text-emerald-600" : t.type === 'transfer' ? "bg-blue-50 text-blue-600" : "bg-rose-50 text-rose-600")}>
+                      {t.type === 'income' ? <TrendingUp className="w-5 h-5" /> : t.type === 'transfer' ? <ArrowRightLeft className="w-5 h-5" /> : <TrendingDown className="w-5 h-5" />}
                     </div>
-                    <div className="flex flex-col items-end gap-2 shrink-0 ml-2">
-                        <span className={cn("font-bold text-base whitespace-nowrap", t.type === 'income' ? "text-emerald-600" : t.type === 'transfer' ? "text-gray-600" : "text-rose-600")}>
-                        {t.type === 'income' ? '+' : t.type === 'expense' ? '-' : ''} {hide(Math.abs(t.amount))}
-                        </span>
-                        <button onClick={(e) => handleDeleteTransaction(t, e)} className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"><Trash2 className="w-4 h-4" /></button>
+                    <div className="flex-1 min-w-0 pr-2">
+                      <div className="flex flex-wrap items-center gap-2 mb-1">
+                        <h3 className="font-bold text-gray-900 leading-tight break-words">{t.description || (t.type === 'transfer' ? 'Trasferimento' : getCategoryName(t.category_id || ''))}</h3>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-1.5 text-xs text-gray-400 font-medium">
+                        <span>{formatDate(t.date)}</span>
+                        {t.category_id && t.type !== 'transfer' && (
+                          <>
+                            <span className="text-gray-300">•</span>
+                            <span className="truncate max-w-[150px] text-gray-500">{getCategoryName(t.category_id)}</span>
+                          </>
+                        )}
+                        {t.investment_id && (
+                          <span className="bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded text-[10px] font-bold">INV</span>
+                        )}
+                      </div>
                     </div>
-                    </div>
-                ))
+                  </div>
+                  <div className="flex flex-col items-end gap-2 shrink-0 ml-2">
+                    <span className={cn("font-bold text-base whitespace-nowrap", t.type === 'income' ? "text-emerald-600" : t.type === 'transfer' ? "text-gray-600" : "text-rose-600")}>
+                      {t.type === 'income' ? '+' : t.type === 'expense' ? '-' : ''} {hide(Math.abs(t.amount))}
+                    </span>
+                    <button onClick={(e) => handleDeleteTransaction(t, e)} className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"><Trash2 className="w-4 h-4" /></button>
+                  </div>
+                </div>
+              ))
             )}
           </div>
         </div>

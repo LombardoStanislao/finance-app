@@ -11,6 +11,7 @@ import InvestmentsPage from './components/InvestmentsPage'
 import GuidePage from './components/GuidePage'
 import BottomNav from './components/BottomNav'
 import TransactionForm from './components/TransactionForm'
+import RecurringEvaluator from './components/RecurringEvaluator'
 import { PrivacyProvider } from './context/PrivacyContext' // Import del Context
 import './App.css'
 
@@ -20,10 +21,10 @@ function App() {
   const [session, setSession] = useState<Session | null>(null)
   const [loading, setLoading] = useState(true)
   const [currentView, setCurrentView] = useState<View>('dashboard')
-  
+
   // Default iniziale (Blu) finché non carichiamo il profilo
   const [primaryColor, setPrimaryColor] = useState<string>('#2563eb')
-  
+
   const [profileUpdated, setProfileUpdated] = useState(0)
   const [isTransactionFormOpen, setIsTransactionFormOpen] = useState(false)
 
@@ -46,17 +47,17 @@ function App() {
 
   async function loadUserTheme(userId: string) {
     try {
-        const { data } = await supabase
-            .from('profiles')
-            .select('theme_color')
-            .eq('id', userId)
-            .maybeSingle()
-        
-        if (data?.theme_color) {
-            setPrimaryColor(data.theme_color)
-        }
+      const { data } = await supabase
+        .from('profiles')
+        .select('theme_color')
+        .eq('id', userId)
+        .maybeSingle()
+
+      if (data?.theme_color) {
+        setPrimaryColor(data.theme_color)
+      }
     } catch (error) {
-        console.error("Errore caricamento tema:", error)
+      console.error("Errore caricamento tema:", error)
     }
   }
 
@@ -93,10 +94,11 @@ function App() {
   return (
     <PrivacyProvider>
       <div className="min-h-screen bg-gray-50 flex flex-col">
+        <RecurringEvaluator session={session} />
         <main className="flex-1 pb-20">
-          
+
           {currentView === 'guide' && (
-            <GuidePage 
+            <GuidePage
               onBack={() => setCurrentView('dashboard')}
               primaryColor={primaryColor}
             />
@@ -152,13 +154,13 @@ function App() {
 
         {currentView !== 'guide' && (
           <BottomNav
-              currentView={currentView === 'settings' ? 'dashboard' : currentView as any} 
-              onNavigate={(view) => handleNavigate(view as View)}
-              onAddTransaction={handleAddTransaction}
-              primaryColor={primaryColor}
+            currentView={currentView === 'settings' ? 'dashboard' : currentView as any}
+            onNavigate={(view) => handleNavigate(view as View)}
+            onAddTransaction={handleAddTransaction}
+            primaryColor={primaryColor}
           />
         )}
-        
+
         <TransactionForm
           isOpen={isTransactionFormOpen}
           onClose={() => setIsTransactionFormOpen(false)}

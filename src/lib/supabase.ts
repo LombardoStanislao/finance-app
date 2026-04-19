@@ -71,3 +71,17 @@ export interface Profile {
   last_api_call: string | null
   updated_at: string
 }
+
+export interface RecurringTransaction {
+  id: string
+  user_id: string
+  amount: number
+  type: 'income' | 'expense'
+  category_id: string | null
+  bucket_id: string | null
+  description: string | null
+  recurrence_rule: 'daily' | 'weekly' | 'monthly' | 'yearly'
+  next_date: string
+  is_active: boolean
+  created_at: string
+}

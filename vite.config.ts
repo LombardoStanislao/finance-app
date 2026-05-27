@@ -19,19 +19,23 @@ export default defineConfig({
         orientation: 'portrait',
         icons: [
           {
-            src: 'pwa-192x192.png',
-            sizes: '192x192',
+            src: '/logo.png',
+            sizes: 'any',
             type: 'image/png',
           },
           {
-            src: 'pwa-512x512.png',
+            src: '/logo.png',
             sizes: '512x512',
             type: 'image/png',
+            purpose: 'any maskable',
           },
         ],
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
+      },
+      devOptions: {
+        enabled: true,
       },
     }),
   ],

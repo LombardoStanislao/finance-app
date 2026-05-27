@@ -8,7 +8,7 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'mask-icon.svg'],
+      includeAssets: ['logo.png', 'pwa-192x192.png', 'pwa-512x512.png'],
       manifest: {
         name: 'Personal Finance Tracker',
         short_name: 'Finance',
@@ -19,12 +19,12 @@ export default defineConfig({
         orientation: 'portrait',
         icons: [
           {
-            src: '/logo.png',
-            sizes: 'any',
+            src: 'pwa-192x192.png',
+            sizes: '192x192',
             type: 'image/png',
           },
           {
-            src: '/logo.png',
+            src: 'pwa-512x512.png',
             sizes: '512x512',
             type: 'image/png',
             purpose: 'any maskable',

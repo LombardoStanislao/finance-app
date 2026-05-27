@@ -194,6 +194,7 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
   const [profileError, setProfileError] = useState<string | null>(null)
   const [profileSuccess, setProfileSuccess] = useState(false)
   const [resetLoading, setResetLoading] = useState(false)
+  const [activeTab, setActiveTab] = useState<'profile' | 'security' | 'categories' | 'data'>('profile')
 
   // --- STATE: Categorie ---
   const [categories, setCategories] = useState<CategoryWithRank[]>([])
@@ -956,6 +957,27 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
 
       <div className="max-w-md mx-auto px-4 py-6 space-y-6">
         
+        {/* TABS MENU */}
+        <div className="bg-gray-200/50 p-1.5 rounded-2xl flex gap-1 relative overflow-x-auto hide-scrollbar">
+            {(['profile', 'security', 'categories', 'data'] as const).map((t) => (
+                <button
+                    key={t}
+                    onClick={() => setActiveTab(t)}
+                    className={cn(
+                        "flex-1 py-2 px-3 text-[11px] font-bold rounded-xl transition-all duration-300 text-center tracking-wide whitespace-nowrap",
+                        activeTab === t ? "bg-white text-gray-900 shadow-sm transform scale-100" : "text-gray-500 hover:text-gray-700 hover:bg-gray-200/50 transform scale-95"
+                    )}
+                >
+                    {t === 'profile' && 'Profilo'}
+                    {t === 'security' && 'Sicurezza'}
+                    {t === 'categories' && 'Categorie'}
+                    {t === 'data' && 'Dati'}
+                </button>
+            ))}
+        </div>
+
+        {activeTab === 'profile' && (
+        <div className="space-y-6 animate-in slide-in-from-left-2 duration-300">
         {/* 1. SITUAZIONE DI PARTENZA */}
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
             <div className="flex items-center gap-3 mb-4">
@@ -1126,6 +1148,15 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
         )}
         {profileSuccess && <div className="flex items-center gap-2 text-emerald-600 bg-emerald-50 p-3 rounded-lg text-sm font-medium"><CheckCircle2 className="w-4 h-4" /> Salvato con successo!</div>}
 
+        {/* TASTO SALVA PROFILO */}
+        <button onClick={handleSaveProfile} disabled={loading} className="w-full py-4 text-white rounded-2xl font-bold text-sm shadow-lg shadow-gray-200 active:scale-95 transition-all flex items-center justify-center gap-2" style={{ backgroundColor: colorHex }}>
+            <Save className="w-4 h-4" /> {loading ? 'Salvataggio...' : 'Salva Modifiche Profilo'}
+        </button>
+        </div>
+        )}
+
+        {activeTab === 'security' && (
+        <div className="space-y-6 animate-in slide-in-from-left-2 duration-300">
         {/* SECURITY SECTION */}
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mt-8">
             <div className="px-5 py-4 border-b border-gray-100 bg-gray-50/50 flex items-center gap-2">
@@ -1202,7 +1233,11 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
                 </div>
             </div>
         </div>
+        </div>
+        )}
 
+        {activeTab === 'categories' && (
+        <div className="space-y-6 animate-in slide-in-from-left-2 duration-300">
         {/* CATEGORIE DND SECTION */}
         <DndContext 
             sensors={sensors} 
@@ -1270,7 +1305,11 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
             </div>
             </div>
         </DndContext>
+        </div>
+        )}
         
+        {activeTab === 'data' && (
+        <div className="space-y-6 animate-in slide-in-from-left-2 duration-300">
         {/* 6. BACKUP E RIPRISTINO */}
         <div className="bg-gray-100/50 rounded-2xl shadow-inner border border-gray-200 overflow-hidden mb-6">
           <div className="px-5 py-4 border-b border-gray-200 flex items-center gap-2">
@@ -1307,23 +1346,20 @@ export default function Settings({ onBack, onProfileUpdate, primaryColor, onColo
           </div>
         </div>
 
-        {/* ACTION BUTTONS BOTTOM */}
-        <div className="space-y-3 pt-6 border-t border-gray-100">
-            {/* TASTO SALVA PROFILO */}
-            <button onClick={handleSaveProfile} disabled={loading} className="w-full py-4 text-white rounded-2xl font-bold text-sm shadow-lg shadow-gray-200 active:scale-95 transition-all flex items-center justify-center gap-2" style={{ backgroundColor: colorHex }}>
-              <Save className="w-4 h-4" /> {loading ? 'Salvataggio...' : 'Salva Modifiche'}
-            </button>
-            
             {/* TASTO FACTORY RESET - PERICOLO */}
             <button 
                 onClick={handleFactoryReset} 
                 disabled={resetLoading} 
-                className="w-full py-4 text-red-600 bg-red-50 border border-red-100 rounded-2xl font-bold text-sm hover:bg-red-100 transition-colors flex items-center justify-center gap-2"
+                className="w-full py-4 text-red-600 bg-red-50 border border-red-100 rounded-2xl font-bold text-sm hover:bg-red-100 transition-colors flex items-center justify-center gap-2 mt-4"
             >
               <AlertOctagon className="w-4 h-4" /> 
               {resetLoading ? 'Cancellazione in corso...' : 'RIPRISTINA DATI DI FABBRICA'}
             </button>
+        </div>
+        )}
 
+        {/* ACTION BUTTONS BOTTOM */}
+        <div className="space-y-3 pt-6 border-t border-gray-100 mt-6">
             {/* TASTO ESCI ACCOUNT */}
             <button onClick={async () => { if (window.confirm('Uscire?')) await supabase.auth.signOut() }} className="w-full py-4 text-gray-500 font-bold text-sm bg-white rounded-2xl border border-gray-100 hover:bg-gray-50 transition-colors flex items-center justify-center gap-2">
               <LogOut className="w-4 h-4" /> Esci dall'account

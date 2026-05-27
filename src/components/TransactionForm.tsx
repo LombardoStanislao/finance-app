@@ -597,6 +597,35 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                                 </div>
                             )}
 
+                            {!editingId && type !== 'transfer' && (
+                                <div className="p-4 bg-purple-50/50 border border-purple-100 rounded-2xl space-y-3 mb-4">
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-2">
+                                            <div className="bg-purple-100 p-2 rounded-xl text-purple-600"><Calendar className="w-4 h-4" /></div>
+                                            <label className="text-sm font-bold text-gray-900">Rendi Ricorrente</label>
+                                        </div>
+                                        <button type="button" onClick={() => setIsRecurring(!isRecurring)} className={cn("relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2", isRecurring ? "bg-purple-600" : "bg-gray-200")}>
+                                            <span className={cn("inline-block h-4 w-4 transform rounded-full bg-white transition-transform", isRecurring ? "translate-x-6" : "translate-x-1")} />
+                                        </button>
+                                    </div>
+
+                                    {isRecurring && (
+                                        <div className="animate-in fade-in slide-in-from-top-2 space-y-3">
+                                            <select value={recurrenceRule} onChange={(e) => setRecurrenceRule(e.target.value as any)} className="w-full px-4 py-3 bg-white text-gray-900 font-medium rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-purple-500">
+                                                <option value="daily">Ogni Giorno</option>
+                                                <option value="weekly">Ogni Settimana</option>
+                                                <option value="monthly">Ogni Mese</option>
+                                                <option value="yearly">Ogni Anno</option>
+                                            </select>
+                                            <div>
+                                                <label className="text-[10px] font-bold text-purple-400 uppercase ml-1 block mb-1">Data Fine (Opzionale)</label>
+                                                <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full px-4 py-3 bg-white text-gray-900 font-medium rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-purple-500" />
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
                             <div>
                                 <label className="text-xs font-bold text-gray-400 uppercase ml-1 mb-1 block">Descrizione</label>
                                 <div className="relative">
@@ -637,34 +666,7 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
 
                             {/* I salvadanai sono stati spostati sopra la Descrizione */}
 
-                            {!editingId && type !== 'transfer' && (
-                                <div className="p-4 bg-purple-50/50 border border-purple-100 rounded-2xl space-y-3">
-                                    <div className="flex items-center justify-between">
-                                        <div className="flex items-center gap-2">
-                                            <div className="bg-purple-100 p-2 rounded-xl text-purple-600"><Calendar className="w-4 h-4" /></div>
-                                            <label className="text-sm font-bold text-gray-900">Rendi Ricorrente</label>
-                                        </div>
-                                        <button type="button" onClick={() => setIsRecurring(!isRecurring)} className={cn("relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2", isRecurring ? "bg-purple-600" : "bg-gray-200")}>
-                                            <span className={cn("inline-block h-4 w-4 transform rounded-full bg-white transition-transform", isRecurring ? "translate-x-6" : "translate-x-1")} />
-                                        </button>
-                                    </div>
 
-                                    {isRecurring && (
-                                        <div className="animate-in fade-in slide-in-from-top-2 space-y-3">
-                                            <select value={recurrenceRule} onChange={(e) => setRecurrenceRule(e.target.value as any)} className="w-full px-4 py-3 bg-white text-gray-900 font-medium rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-purple-500">
-                                                <option value="daily">Ogni Giorno</option>
-                                                <option value="weekly">Ogni Settimana</option>
-                                                <option value="monthly">Ogni Mese</option>
-                                                <option value="yearly">Ogni Anno</option>
-                                            </select>
-                                            <div>
-                                                <label className="text-[10px] font-bold text-purple-400 uppercase ml-1 block mb-1">Data Fine (Opzionale)</label>
-                                                <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full px-4 py-3 bg-white text-gray-900 font-medium rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-purple-500" />
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
-                            )}
                         </div>
                     </form>
                 </div>

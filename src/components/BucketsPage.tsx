@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
-import { ArrowLeft, Plus, Trash2, X, Target, PiggyBank, PenLine, Settings, CheckCircle2, AlertTriangle, ArrowUpDown, Lock, Briefcase } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, X, Target, PiggyBank, PenLine, Settings, CheckCircle2, AlertTriangle, ArrowUpDown, Lock, Briefcase, GripVertical } from 'lucide-react'
+import confetti from 'canvas-confetti'
 import { supabase, type Bucket } from '../lib/supabase'
 import { formatCurrency, cn } from '../lib/utils'
 
@@ -313,12 +314,18 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
     return (
         <div className={cn("p-4 rounded-xl shadow-sm border transition-transform active:scale-[0.99]", cardBg)}>
             <div className="flex items-center justify-between mb-3">
-                <div className="flex-1 min-w-0 pr-4">
-                    <h3 className={cn("font-bold text-lg leading-tight break-words flex items-center gap-2", completed ? "text-emerald-800" : isTax ? "text-purple-900" : "text-gray-900")}>
-                        {isTax && <Briefcase className="w-4 h-4 text-purple-600 flex-shrink-0" />}
-                        {bucket.name}
-                        {completed && <CheckCircle2 className="w-4 h-4 text-emerald-500 flex-shrink-0" />}
-                    </h3>
+                <div className="flex items-center gap-2 flex-1 min-w-0 pr-4">
+                    {!isTax && (
+                        <div className="text-gray-300 active:text-gray-500 cursor-grab active:cursor-grabbing touch-none p-1 -ml-1 flex-shrink-0 transition-colors">
+                            <GripVertical className="w-5 h-5" />
+                        </div>
+                    )}
+                    <div>
+                        <h3 className={cn("font-bold text-lg leading-tight break-words flex items-center gap-2", completed ? "text-emerald-800" : isTax ? "text-purple-900" : "text-gray-900")}>
+                            {isTax && <Briefcase className="w-4 h-4 text-purple-600 flex-shrink-0" />}
+                            {bucket.name}
+                            {completed && <CheckCircle2 className="w-4 h-4 text-emerald-500 flex-shrink-0" />}
+                        </h3>
                     <div className="flex items-center gap-2 mt-1.5">
                         <p className="text-xs text-gray-400 font-medium">Saldo attuale</p>
                         {/* Mostra % solo se non è un bucket fiscale (che ha sempre 0% visuale) o se ha valore */}
@@ -328,10 +335,17 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                             </span>
                         )}
                         {completed && (
-                            <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-700 text-[10px] rounded-md font-bold uppercase tracking-wide whitespace-nowrap flex items-center gap-1">
-                                <Lock className="w-3 h-3" /> Target Raggiunto
-                            </span>
+                            <button 
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    confetti({ particleCount: 120, spread: 80, origin: { y: 0.6 }, colors: ['#10b981', '#34d399', '#ffffff'] });
+                                }}
+                                className="px-1.5 py-0.5 bg-emerald-100 text-emerald-700 text-[10px] rounded-md font-bold uppercase tracking-wide whitespace-nowrap flex items-center gap-1 hover:bg-emerald-200 transition-colors active:scale-95 cursor-pointer shadow-sm"
+                            >
+                                <Lock className="w-3 h-3" /> Target Raggiunto 🎊
+                            </button>
                         )}
+                    </div>
                     </div>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">

@@ -195,23 +195,23 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
       if (pieRange === 'MONTH') {
         const sm = String(selectedMonth).padStart(2, '0')
         const lastDay = new Date(selectedYear, selectedMonth, 0).getDate()
-        startDate = `${selectedYear}-${sm}-01T00:00:00`
-        endDate = `${selectedYear}-${sm}-${lastDay}T23:59:59`
+        startDate = `${selectedYear}-${sm}-01T00:00:00.000Z`
+        endDate = `${selectedYear}-${sm}-${lastDay}T23:59:59.999Z`
       } else if (pieRange === '6M') {
         const now = new Date()
         const prev = new Date(now.getFullYear(), now.getMonth() - 5, 1)
         const smStart = String(prev.getMonth() + 1).padStart(2, '0')
         const smEnd = String(now.getMonth() + 1).padStart(2, '0')
         const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
-        startDate = `${prev.getFullYear()}-${smStart}-01T00:00:00`
-        endDate = `${now.getFullYear()}-${smEnd}-${lastDay}T23:59:59`
+        startDate = `${prev.getFullYear()}-${smStart}-01T00:00:00.000Z`
+        endDate = `${now.getFullYear()}-${smEnd}-${lastDay}T23:59:59.999Z`
       } else if (pieRange === 'YEAR') {
-        startDate = `${selectedYear}-01-01T00:00:00`
-        endDate = `${selectedYear}-12-31T23:59:59`
+        startDate = `${selectedYear}-01-01T00:00:00.000Z`
+        endDate = `${selectedYear}-12-31T23:59:59.999Z`
       } else {
         if (!customStart || !customEnd) { setLoading(false); return }
-        startDate = `${customStart}T00:00:00`
-        endDate = `${customEnd}T23:59:59`
+        startDate = `${customStart}T00:00:00.000Z`
+        endDate = `${customEnd}T23:59:59.999Z`
       }
 
       const { data, error } = await supabase
@@ -380,7 +380,7 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
         entry.transactions.push({ ...t, subCategoryName: subName })
         if (subName) entry.subCategories.set(subName, (entry.subCategories.get(subName) || 0) + absAmount)
 
-      } else if (t.type === 'income' || t.type === 'initial') {
+      } else if (t.type === 'income') {
         totalIncome += absAmount
         cfEntry.inc += absAmount
 
@@ -544,14 +544,14 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
         {/* TIME CONTROLS (Pills iOS Style) */}
         <div className="flex flex-col gap-4">
           {/* Slider Orizzontale Frequenza */}
-          <div className="bg-gray-100 p-1 rounded-xl flex">
+          <div className="bg-gray-200/50 p-1.5 rounded-2xl flex gap-1 relative">
             {(['MONTH', '6M', 'YEAR', 'CUSTOM'] as const).map((r) => (
               <button
                 key={r}
                 onClick={() => setPieRange(r)}
                 className={cn(
-                  "flex-1 py-1.5 text-[11px] font-bold rounded-lg transition-all text-center tracking-wide",
-                  pieRange === r ? "bg-white text-gray-900 shadow-sm" : "text-gray-400 hover:text-gray-600"
+                  "flex-1 py-2 text-[11px] font-bold rounded-xl transition-all duration-300 text-center tracking-wide z-10",
+                  pieRange === r ? "bg-white text-gray-900 shadow-sm transform scale-100" : "text-gray-500 hover:text-gray-700 hover:bg-gray-200/50 transform scale-95"
                 )}
               >
                 {r === 'MONTH' ? 'Mese' : r === '6M' ? '6 Mesi' : r === 'YEAR' ? 'Anno' : 'Periodo'}
@@ -723,8 +723,10 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
                       stroke="white"
                       strokeWidth={2}
                       isAnimationActive={true}
+                      onClick={(data, index) => setActiveDrillCategory(processedExpenses[index])}
+                      className="cursor-pointer"
                     >
-                      {processedExpenses.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
+                      {processedExpenses.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} className="hover:opacity-80 transition-opacity outline-none" />)}
                     </Pie>
                     <Tooltip content={<CustomTooltip />} />
                   </PieChart>
@@ -797,8 +799,10 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
                       stroke="white"
                       strokeWidth={2}
                       isAnimationActive={true}
+                      onClick={(data, index) => setActiveDrillCategory(processedIncome[index])}
+                      className="cursor-pointer"
                     >
-                      {processedIncome.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
+                      {processedIncome.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} className="hover:opacity-80 transition-opacity outline-none" />)}
                     </Pie>
                     <Tooltip content={<CustomTooltip />} />
                   </PieChart>
@@ -861,8 +865,10 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
                     labelLine={false}
                     stroke="white"
                     strokeWidth={3}
+                    onClick={(data, index) => setActiveDrillCategory(investmentData[index])}
+                    className="cursor-pointer"
                   >
-                    {investmentData.map((entry, index) => <Cell key={`cell-inv-${index}`} fill={entry.color} />)}
+                    {investmentData.map((entry, index) => <Cell key={`cell-inv-${index}`} fill={entry.color} className="hover:opacity-80 transition-opacity outline-none" />)}
                   </Pie>
                   <Tooltip
                     content={<CustomTooltip />}

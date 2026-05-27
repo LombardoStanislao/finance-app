@@ -3,7 +3,29 @@ import { TrendingUp, TrendingDown, Wallet, PiggyBank, Trash2, Settings, ArrowRig
 import { supabase, type Transaction, type Category } from '../lib/supabase'
 import { formatCurrency, formatDate, cn, calculateLiquidity } from '../lib/utils'
 import TransactionForm from './TransactionForm'
+import { ErrorBoundary } from '../ErrorBoundary'
 import { usePrivacy } from '../context/PrivacyContext'
+
+// Hook per i contatori animati
+function useCountUp(end: number, duration: number = 1200) {
+  const [count, setCount] = useState(0)
+  useEffect(() => {
+    let startTimestamp: number | null = null
+    let animationFrameId: number
+    const step = (timestamp: number) => {
+      if (!startTimestamp) startTimestamp = timestamp
+      const progress = Math.min((timestamp - startTimestamp) / duration, 1)
+      const easeProgress = 1 - Math.pow(1 - progress, 4) // easeOutQuart
+      setCount(end * easeProgress)
+      if (progress < 1) {
+        animationFrameId = window.requestAnimationFrame(step)
+      }
+    }
+    animationFrameId = window.requestAnimationFrame(step)
+    return () => window.cancelAnimationFrame(animationFrameId)
+  }, [end, duration])
+  return count
+}
 
 interface BudgetProgress {
   category: Category
@@ -94,16 +116,17 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
 
       // 4. Mese Corrente
       const now = new Date()
-      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
-      const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59).toISOString()
+      const m = String(now.getMonth() + 1).padStart(2, '0')
+      const y = now.getFullYear()
+      const maxDays = new Date(y, now.getMonth() + 1, 0).getDate()
+      const monthStart = new Date(`${y}-${m}-01T00:00:00.000Z`).getTime()
+      const monthEnd = new Date(`${y}-${m}-${String(maxDays).padStart(2, '0')}T23:59:59.999Z`).getTime()
 
       let mIncome = 0
       let mExpenses = 0
 
       transactions.forEach(t => {
-        const d = new Date(t.date).toISOString()
-        const isTradingPL = t.investment_id !== null && (t.type === 'income' || t.type === 'expense')
-
+        const d = new Date(t.date).getTime()
         if (d >= monthStart && d <= monthEnd) {
           const val = Number(t.amount) || 0
           if (t.type === 'income') mIncome += val
@@ -120,8 +143,8 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
       if (categoriesWithBudget.length > 0) {
         const expensesByCat = new Map<string, number>()
         transactions.forEach(t => {
-          const d = new Date(t.date).toISOString()
-          const isTradingPL = t.investment_id !== null
+          const d = new Date(t.date).getTime()
+          const isTradingPL = t.description?.includes('Trading P&L')
 
           if (t.type === 'expense' && t.category_id && d >= monthStart && d <= monthEnd && !isTradingPL) {
             const current = expensesByCat.get(t.category_id) || 0
@@ -130,10 +153,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
         })
 
         categoriesWithBudget.forEach(c => {
-          // Conta le spese della categoria padre e di tutte le sue SOTTO-CATEGORIE (se questa è una root)
           let spent = expensesByCat.get(c.id) || 0
-
-          // Trova eventuali figli
           const children = categoriesList.filter(cat => cat.parent_id === c.id)
           children.forEach(child => {
             spent += (expensesByCat.get(child.id) || 0)
@@ -161,7 +181,6 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
   // --- LOGICA DI ROLLBACK & PROTEZIONE ---
   async function handleDeleteTransaction(transaction: Transaction, e: React.MouseEvent) {
     e.stopPropagation()
-
     if (transaction.type === 'transfer' && transaction.bucket_id) {
       const { data: bucketCheck } = await supabase.from('buckets').select('name').eq('id', transaction.bucket_id).single()
       if (bucketCheck && ['Aliquota INPS', 'Aliquota Imposta Sostitutiva'].includes(bucketCheck.name)) {
@@ -176,7 +195,6 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
 
-      // 2. GESTIONE INVESTIMENTO (Atomic Group Delete)
       if (transaction.investment_id) {
         const { data: investment } = await supabase.from('investments').select('*').eq('id', transaction.investment_id).single()
         if (investment) {
@@ -198,7 +216,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
             for (const sib of siblings) {
                 if (sib.type === 'transfer') totalInvestedToRevert += sib.amount
                 if ((sib as any).asset_quantity) totalQtyToRevert += (sib as any).asset_quantity
-                await supabase.from('transactions').delete().eq('id', sib.id) // Elimina direttamente qua
+                await supabase.from('transactions').delete().eq('id', sib.id)
             }
 
             const currentQty = investment.quantity || 0
@@ -209,7 +227,6 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
             let newCurrentValue = 0
             if (currentQty > 0) {
                 const pricePerShare = investment.current_value / currentQty
-                newCurrentValue = (Math.round((pricePerShare * newQty) * 100) / 100)
                 newCurrentValue = Number((pricePerShare * newQty).toFixed(2))
             } else if (newQty > 0) {
                 newCurrentValue = newInvested
@@ -222,7 +239,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
             }).eq('id', investment.id).eq('user_id', user.id)
 
             fetchData()
-            return // Usciamo per non triggerare altra logica di cancellazione o causare crash
+            return
           }
         }
       }
@@ -272,126 +289,124 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
 
   function getCategoryName(id: string) { return categories.find(c => c.id === id)?.name || 'Sconosciuta' }
 
-  if (loading) return <div className="min-h-screen flex items-center justify-center">Caricamento...</div>
+  const animatedNetWorth = useCountUp(netWorth)
+  const animatedLiquidity = useCountUp(liquidity)
+  const animatedInvestments = useCountUp(investmentsTotal)
+  const animatedIncome = useCountUp(monthIncome, 1000)
+  const animatedExpenses = useCountUp(monthExpenses, 1000)
+
+  if (loading) return (
+    <div className="min-h-screen bg-gray-50 pb-24">
+      <div className="bg-white px-4 py-4 border-b border-gray-100 flex items-center justify-between">
+        <div className="space-y-1">
+          <div className="w-20 h-3 bg-gray-100 rounded-full animate-pulse" />
+          <div className="w-32 h-6 bg-gray-200 rounded-full animate-pulse" />
+        </div>
+        <div className="w-10 h-10 bg-gray-100 rounded-full animate-pulse" />
+      </div>
+      <div className="max-w-md mx-auto p-4 space-y-6">
+        <div className="w-full h-48 bg-gray-100 rounded-3xl animate-pulse" />
+        <div className="grid grid-cols-2 gap-4">
+          <div className="h-24 bg-gray-100 rounded-2xl animate-pulse" />
+          <div className="h-24 bg-gray-100 rounded-2xl animate-pulse" />
+        </div>
+        <div className="space-y-3">
+          {[1, 2, 3].map(i => <div key={i} className="h-20 bg-white rounded-2xl border border-gray-100 animate-pulse" />)}
+        </div>
+      </div>
+    </div>
+  )
 
   return (
     <div className="min-h-screen bg-gray-50 pb-24">
-      {/* HEADER */}
       <div className="bg-white sticky top-0 z-20 border-b border-gray-100 px-4 py-4 flex items-center justify-between shadow-sm">
         <div>
           <p className="text-xs text-gray-400 font-medium mb-0.5">Bentornato,</p>
           <h1 className="text-xl font-bold text-gray-900 leading-none">{displayName}</h1>
         </div>
         <div className="flex gap-2">
-          {/* TASTO PRIVACY */}
-          <button onClick={togglePrivacy} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-600 border border-gray-100 active:scale-95 transition-transform">
-            {isPrivacyEnabled ? <EyeOff className="w-5 h-5" strokeWidth={2} /> : <Eye className="w-5 h-5" strokeWidth={2} />}
+          <button onClick={togglePrivacy} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-600 border border-gray-100 transition-transform active:scale-95">
+            {isPrivacyEnabled ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
           </button>
-          <button onClick={onOpenGuide} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-blue-600 border border-gray-100 active:scale-95 transition-transform"><BookOpen className="w-5 h-5" strokeWidth={2} /></button>
-          <button onClick={onOpenSettings} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-600 border border-gray-100 active:scale-95 transition-transform"><Settings className="w-5 h-5" strokeWidth={2} /></button>
+          <button onClick={onOpenGuide} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-blue-600 border border-gray-100 transition-transform active:scale-95"><BookOpen className="w-5 h-5" /></button>
+          <button onClick={onOpenSettings} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-600 border border-gray-100 transition-transform active:scale-95"><Settings className="w-5 h-5" /></button>
         </div>
       </div>
 
       <div className="max-w-md mx-auto px-4 py-6 space-y-8">
-
-        {/* HERO CARD */}
         <div
           className="rounded-3xl p-6 shadow-lg text-white relative overflow-hidden transition-colors duration-300"
           style={{ backgroundColor: primaryColor, boxShadow: `0 20px 25px -5px ${primaryColor}40` }}
         >
           <div className="absolute inset-0 bg-gradient-to-br from-white/10 to-black/10 pointer-events-none" />
-          <div className="absolute top-0 right-0 w-32 h-32 bg-white opacity-10 rounded-full -mr-10 -mt-10 blur-2xl"></div>
-
           <div className="relative z-10">
             <div className="flex items-center gap-2 mb-2 opacity-90">
               <Wallet className="w-4 h-4" />
               <span className="text-xs font-bold uppercase tracking-wider">Patrimonio Totale</span>
             </div>
-            <p className="text-4xl font-bold tracking-tight mb-6">{hide(netWorth)}</p>
-
+            <p className="text-4xl font-black tracking-tight mb-6">{hide(animatedNetWorth)}</p>
             <div className="flex gap-3">
               <div className="flex-1 bg-white/10 backdrop-blur-sm rounded-xl p-3 border border-white/10">
                 <div className="flex items-center gap-1.5 mb-1 text-white/90">
                   <PiggyBank className="w-3.5 h-3.5" />
                   <span className="text-[10px] font-bold uppercase">Liquidità</span>
                 </div>
-                <p className="font-semibold text-lg">{hide(liquidity)}</p>
+                <p className="font-semibold text-lg">{hide(animatedLiquidity)}</p>
               </div>
               <button onClick={onOpenInvestments} className="flex-1 bg-white/10 backdrop-blur-sm rounded-xl p-3 border border-white/10 text-left hover:bg-white/20 transition-colors">
                 <div className="flex items-center gap-1.5 mb-1 text-white/90">
                   <TrendingUp className="w-3.5 h-3.5" />
                   <span className="text-[10px] font-bold uppercase">Investimenti</span>
                 </div>
-                <p className="font-semibold text-lg">{hide(investmentsTotal)}</p>
+                <p className="font-semibold text-lg">{hide(animatedInvestments)}</p>
               </button>
             </div>
           </div>
         </div>
 
-        {/* FLUSSO DEL MESE */}
         <div className="grid grid-cols-2 gap-4">
           <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
             <div className="w-8 h-8 rounded-full bg-emerald-50 flex items-center justify-center mb-3">
               <TrendingUp className="w-4 h-4 text-emerald-600" />
             </div>
             <p className="text-xs text-gray-500 font-medium uppercase mb-0.5">Entrate Mese</p>
-            <p className="text-lg font-bold text-gray-900">{hide(monthIncome)}</p>
+            <p className="text-lg font-black text-gray-900">{hide(animatedIncome)}</p>
           </div>
           <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
             <div className="w-8 h-8 rounded-full bg-rose-50 flex items-center justify-center mb-3">
               <TrendingDown className="w-4 h-4 text-rose-600" />
             </div>
             <p className="text-xs text-gray-500 font-medium uppercase mb-0.5">Uscite Mese</p>
-            <p className="text-lg font-bold text-gray-900">{hide(monthExpenses)}</p>
+            <p className="text-lg font-black text-gray-900">{hide(animatedExpenses)}</p>
           </div>
         </div>
 
-        {/* BUDGET CARDS */}
         {budgetProgress.length > 0 && (
           <div>
-            <div className="flex items-center justify-between px-1 mb-3">
+            <div className="flex items-center justify-between mb-4 px-1">
               <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Stato Budget</h2>
               <button onClick={onOpenSettings} className="text-xs font-bold text-blue-600">Gestisci</button>
             </div>
-            <div className="flex gap-3 overflow-x-auto pb-4 -mx-4 px-4 hide-scrollbar">
+            <div className="flex gap-3 overflow-x-auto pb-4 -mx-4 px-4 hide-scrollbar snap-x">
               {budgetProgress.map((budget) => {
                 const isOver = budget.spent > Number(budget.category.budget_limit)
                 const isWarning = !isOver && budget.percentage > 80
-                const statusColor = isOver ? 'text-rose-600 bg-rose-50' : isWarning ? 'text-amber-600 bg-amber-50' : 'text-emerald-600 bg-emerald-50'
-                const barColor = isOver ? 'bg-rose-500' : isWarning ? 'bg-amber-500' : 'bg-emerald-500'
-                const statusIcon = isOver ? <AlertTriangle className="w-3 h-3" /> : isWarning ? <AlertTriangle className="w-3 h-3" /> : <CheckCircle2 className="w-3 h-3" />
-                const statusText = isOver ? 'Sforato' : isWarning ? 'In esaurimento' : 'In linea'
-
+                const barColor = isOver ? 'bg-rose-500' : isWarning ? 'bg-amber-500' : 'bg-blue-500'
+                
                 return (
-                  <div key={budget.category.id} className="min-w-[260px] bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex flex-col justify-between">
-                    <div className="flex justify-between items-start mb-4">
-                      <div className="flex items-center gap-2">
-                        <div className="p-2 bg-gray-50 rounded-lg text-gray-500">
-                          <ShoppingBag className="w-4 h-4" />
-                        </div>
-                        <div>
-                          <p className="font-bold text-gray-900 text-sm">{budget.category.name}</p>
-                          <p className="text-[10px] text-gray-400 font-medium uppercase">Mensile</p>
-                        </div>
-                      </div>
-                      <div className={cn("px-2 py-1 rounded-md text-[10px] font-bold uppercase flex items-center gap-1", statusColor)}>
-                        {statusIcon} {statusText}
-                      </div>
+                  <div key={budget.category.id} className="min-w-[200px] bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex flex-col snap-start">
+                    <div className="flex justify-between items-start mb-3">
+                      <p className="font-bold text-gray-900 text-sm truncate pr-2">{budget.category.name}</p>
+                      <span className={cn("text-[10px] font-bold px-1.5 py-0.5 rounded", isOver ? "bg-rose-100 text-rose-600" : "bg-gray-100 text-gray-500")}>
+                        {Math.round(budget.percentage)}%
+                      </span>
                     </div>
-                    <div>
-                      <div className="flex items-baseline gap-1 mb-2">
-                        <span className={cn("text-2xl font-bold", isOver ? "text-rose-600" : "text-gray-900")}>
-                          {hide(budget.remaining)}
-                        </span>
-                        <span className="text-xs text-gray-400 font-medium">rimanenti</span>
-                      </div>
-                      <div className="flex justify-between text-[10px] text-gray-400 mb-1.5 font-medium">
-                        <span>{hide(budget.spent)} spesi</span>
-                        <span>Limit {hide(Number(budget.category.budget_limit))}</span>
-                      </div>
-                      <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
-                        <div className={cn("h-full rounded-full transition-all duration-500", barColor)} style={{ width: `${Math.min(budget.percentage, 100)}%` }} />
-                      </div>
+                    <div className="w-full bg-gray-100 rounded-full h-2 mb-3 overflow-hidden">
+                      <div className={cn("h-full rounded-full transition-all duration-1000", barColor)} style={{ width: `${Math.min(budget.percentage, 100)}%` }} />
+                    </div>
+                    <div className="flex justify-between items-end mt-auto">
+                      <span className={cn("font-bold text-sm", isOver ? "text-rose-600" : "text-gray-900")}>{hide(budget.spent)}</span>
+                      <span className="text-[10px] text-gray-400 font-bold uppercase">/ {hide(Number(budget.category.budget_limit))}</span>
                     </div>
                   </div>
                 )
@@ -400,7 +415,6 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
           </div>
         )}
 
-        {/* TRANSAZIONI RECENTI */}
         <div>
           <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-3 px-1">Attività Recente</h2>
           <div className="space-y-3">
@@ -447,7 +461,9 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
         </div>
       </div>
 
-      <TransactionForm isOpen={isTransactionFormOpen} onClose={() => { setIsTransactionFormOpen(false); setEditingTransaction(null) }} onSuccess={fetchData} primaryColor={primaryColor} editingTransaction={editingTransaction} />
+      <ErrorBoundary>
+        <TransactionForm isOpen={isTransactionFormOpen} onClose={() => { setIsTransactionFormOpen(false); setEditingTransaction(null) }} onSuccess={fetchData} primaryColor={primaryColor} editingTransaction={editingTransaction} />
+      </ErrorBoundary>
     </div>
   )
 }

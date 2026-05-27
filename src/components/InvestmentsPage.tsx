@@ -613,20 +613,24 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
                                             const plPerc = invAmount > 0 ? (pl / invAmount) * 100 : 0
 
                                             return (
-                                                <div key={item.id} onClick={() => openDetail(item)} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between group active:scale-[0.99] transition-transform cursor-pointer relative hover:border-blue-200">
+                                                <div key={item.id} onClick={() => openDetail(item)} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm flex items-center justify-between group active:scale-[0.98] transition-all cursor-pointer relative hover:border-blue-200 hover:shadow-md">
                                                     <div className="min-w-0 pr-4">
                                                         <div className="flex items-center gap-2">
                                                             <p className="font-bold text-gray-900 text-base truncate">{item.name || item.type}</p>
                                                             {item.is_automated && <span className="bg-blue-50 text-blue-600 text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide">Auto</span>}
                                                         </div>
-                                                        <div className="flex flex-col mt-1 gap-0.5">
-                                                            {item.ticker && <span className="text-[10px] text-gray-400 font-mono">{item.ticker}</span>}
+                                                        <div className="flex flex-col mt-1 gap-1">
+                                                            {item.ticker && <span className="text-[10px] text-gray-400 font-mono font-bold bg-gray-50 px-1.5 py-0.5 rounded w-fit">{item.ticker}</span>}
                                                             {invAmount > 0 && (
-                                                                <span className={cn("text-[10px] font-bold flex items-center gap-0.5", pl >= 0 ? "text-emerald-600" : "text-rose-600")}>
-                                                                    {pl >= 0 ? <ArrowUp className="w-2.5 h-2.5" /> : <ArrowDown className="w-2.5 h-2.5" />}
-                                                                    {/* APPLICAZIONE PRIVACY */}
-                                                                    {hide(pl)} ({plPerc.toFixed(1)}%)
-                                                                </span>
+                                                                <div className="flex items-center gap-1.5 mt-0.5">
+                                                                    <span className={cn("text-[11px] font-bold", pl >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                                                                        {pl >= 0 ? '+' : ''}{hide(pl)}
+                                                                    </span>
+                                                                    <span className={cn("text-[10px] font-bold px-1.5 py-0.5 rounded-md flex items-center gap-0.5 shadow-sm", pl >= 0 ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")}>
+                                                                        {pl >= 0 ? <ArrowUp className="w-2.5 h-2.5" /> : <ArrowDown className="w-2.5 h-2.5" />}
+                                                                        {pl >= 0 ? '+' : ''}{plPerc.toFixed(2)}%
+                                                                    </span>
+                                                                </div>
                                                             )}
                                                         </div>
                                                     </div>

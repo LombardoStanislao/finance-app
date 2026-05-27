@@ -4,6 +4,7 @@ import { LogIn, UserPlus, Mail, Lock, Wallet, ArrowRight, Eye, EyeOff } from 'lu
 
 export default function Auth() {
   const [isSignUp, setIsSignUp] = useState(false)
+  const [isForgotPassword, setIsForgotPassword] = useState(false)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false) // Nuovo stato per la visibilità
@@ -43,6 +44,29 @@ export default function Auth() {
     }
   }
 
+  async function handleResetPassword(e: React.FormEvent) {
+    e.preventDefault()
+    if (!email) {
+      setError('Inserisci il tuo indirizzo email')
+      return
+    }
+    setLoading(true)
+    setError(null)
+    setMessage(null)
+
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: window.location.origin,
+      })
+      if (error) throw error
+      setMessage('Ti abbiamo inviato un link per reimpostare la password. Controlla la tua email!')
+    } catch (error: any) {
+      setError(error.message || 'Errore durante l\'invio dell\'email di recupero')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
     <div className="min-h-screen flex flex-col justify-center py-12 sm:px-6 lg:px-8 bg-gradient-to-br from-blue-50 via-white to-indigo-50">
       
@@ -67,8 +91,15 @@ export default function Auth() {
           {/* Form Header */}
           <div className="mb-6 text-center">
              <h3 className="text-xl font-bold text-gray-900">
-                {isSignUp ? 'Nuovo Account' : 'Bentornato'}
+                {isForgotPassword 
+                  ? 'Recupera Password' 
+                  : isSignUp ? 'Nuovo Account' : 'Bentornato'}
              </h3>
+             {isForgotPassword && (
+                <p className="mt-2 text-sm text-gray-500">
+                  Inserisci la tua email e ti invieremo un link per reimpostare la password.
+                </p>
+             )}
           </div>
 
           {/* Feedback Messages */}
@@ -85,7 +116,7 @@ export default function Auth() {
           )}
 
           {/* Auth Form */}
-          <form onSubmit={handleAuth} className="space-y-5">
+          <form onSubmit={isForgotPassword ? handleResetPassword : handleAuth} className="space-y-5">
             <div>
               <label htmlFor="email" className="block text-xs font-bold text-gray-500 uppercase ml-1 mb-1.5">
                 Email
@@ -106,39 +137,56 @@ export default function Auth() {
               </div>
             </div>
 
-            <div>
-              <label htmlFor="password" className="block text-xs font-bold text-gray-500 uppercase ml-1 mb-1.5">
-                Password
-              </label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                  <Lock className="h-5 w-5 text-gray-400" />
+            {!isForgotPassword && (
+              <div>
+                <label htmlFor="password" className="block text-xs font-bold text-gray-500 uppercase ml-1 mb-1.5">
+                  Password
+                </label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                    <Lock className="h-5 w-5 text-gray-400" />
+                  </div>
+                  <input
+                    id="password"
+                    type={showPassword ? "text" : "password"} // Tipo dinamico
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                    minLength={6}
+                    className="block w-full pl-11 pr-12 py-3.5 bg-gray-50 border-transparent text-gray-900 placeholder-gray-400 focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent rounded-xl transition-all outline-none font-medium"
+                    placeholder="••••••••"
+                  />
+                  
+                  {/* Toggle Visibility Button */}
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute inset-y-0 right-0 pr-4 flex items-center text-gray-400 hover:text-gray-600 focus:outline-none transition-colors"
+                  >
+                    {showPassword ? (
+                      <EyeOff className="h-5 w-5" />
+                    ) : (
+                      <Eye className="h-5 w-5" />
+                    )}
+                  </button>
                 </div>
-                <input
-                  id="password"
-                  type={showPassword ? "text" : "password"} // Tipo dinamico
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                  minLength={6}
-                  className="block w-full pl-11 pr-12 py-3.5 bg-gray-50 border-transparent text-gray-900 placeholder-gray-400 focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent rounded-xl transition-all outline-none font-medium"
-                  placeholder="••••••••"
-                />
-                
-                {/* Toggle Visibility Button */}
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute inset-y-0 right-0 pr-4 flex items-center text-gray-400 hover:text-gray-600 focus:outline-none transition-colors"
-                >
-                  {showPassword ? (
-                    <EyeOff className="h-5 w-5" />
-                  ) : (
-                    <Eye className="h-5 w-5" />
-                  )}
-                </button>
+                {!isSignUp && (
+                  <div className="flex justify-end mt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsForgotPassword(true)
+                        setError(null)
+                        setMessage(null)
+                      }}
+                      className="text-xs font-semibold text-blue-600 hover:text-blue-500 transition-colors"
+                    >
+                      Password dimenticata?
+                    </button>
+                  </div>
+                )}
               </div>
-            </div>
+            )}
 
             <div className="pt-2">
                 <button
@@ -148,6 +196,8 @@ export default function Auth() {
                 >
                     {loading ? (
                     'Elaborazione...'
+                    ) : isForgotPassword ? (
+                      'Invia Link di Recupero'
                     ) : isSignUp ? (
                     <span className="flex items-center gap-2">
                         Crea Account <UserPlus className="w-4 h-4" />
@@ -172,20 +222,35 @@ export default function Auth() {
               </div>
             </div>
 
-            <div className="mt-6 text-center">
-              <button
-                onClick={() => {
-                  setIsSignUp(!isSignUp)
-                  setError(null)
-                  setMessage(null)
-                }}
-                className="inline-flex items-center justify-center gap-2 text-sm font-semibold text-blue-600 hover:text-blue-500 transition-colors bg-blue-50 px-4 py-2 rounded-xl hover:bg-blue-100"
-              >
-                {isSignUp
-                  ? 'Hai già un account? Accedi'
-                  : 'Non hai un account? Registrati'}
-                <ArrowRight className="w-4 h-4" />
-              </button>
+            <div className="mt-6 text-center flex flex-col gap-3">
+              {isForgotPassword && (
+                <button
+                  onClick={() => {
+                    setIsForgotPassword(false)
+                    setError(null)
+                    setMessage(null)
+                  }}
+                  className="inline-flex items-center justify-center gap-2 text-sm font-semibold text-gray-500 hover:text-gray-700 transition-colors"
+                >
+                  Torna al Login
+                </button>
+              )}
+              
+              {!isForgotPassword && (
+                <button
+                  onClick={() => {
+                    setIsSignUp(!isSignUp)
+                    setError(null)
+                    setMessage(null)
+                  }}
+                  className="inline-flex items-center justify-center gap-2 text-sm font-semibold text-blue-600 hover:text-blue-500 transition-colors bg-blue-50 px-4 py-2 rounded-xl hover:bg-blue-100 mx-auto"
+                >
+                  {isSignUp
+                    ? 'Hai già un account? Accedi'
+                    : 'Non hai un account? Registrati'}
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              )}
             </div>
           </div>
         </div>

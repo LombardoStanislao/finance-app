@@ -89,7 +89,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                   })
                   const toDelete = matches.slice(1)
                   for (const del of toDelete) {
-                      await supabase.from('buckets').delete().eq('id', del.id)
+                      await supabase.from('buckets').delete().eq('id', del.id).eq('user_id', user.id)
                   }
                   dbModified = true
               }
@@ -197,11 +197,11 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
       const { error } = await supabase
         .from('buckets')
         .insert({
-          name: newBucketName,
-          distribution_percentage: newPercentage,
-          current_balance: newBucketBalance ? parseFloat(newBucketBalance) : 0,
-          target_amount: newBucketTarget ? parseFloat(newBucketTarget) : 0,
           user_id: user.id,
+          name: newBucketName,
+          distribution_percentage: newBucketDistribution ? Number(parseFloat(newBucketDistribution).toFixed(2)) : 0,
+          current_balance: newBucketBalance ? Number(parseFloat(newBucketBalance).toFixed(2)) : 0,
+          target_amount: newBucketTarget ? Number(parseFloat(newBucketTarget).toFixed(2)) : null,
         })
 
       if (error) throw error
@@ -224,6 +224,9 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
     e.preventDefault()
     if (!editingBucket) return
     setError(null)
+    
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
 
     // CHECK AGGIUNTIVO SERVER SIDE
     const isSystemBucket = isProTax && ['Aliquota INPS', 'Aliquota Imposta Sostitutiva'].includes(editingBucket.name)
@@ -249,11 +252,12 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
         .from('buckets')
         .update({
           name: finalName,
-          distribution_percentage: newPercentage,
-          current_balance: editBucketBalance ? parseFloat(editBucketBalance) : 0,
-          target_amount: editBucketTarget ? parseFloat(editBucketTarget) : 0,
+          distribution_percentage: Number(finalDistribution.toFixed(2)),
+          current_balance: editBucketBalance ? Number(parseFloat(editBucketBalance).toFixed(2)) : 0,
+          target_amount: editBucketTarget ? Number(parseFloat(editBucketTarget).toFixed(2)) : null,
         })
         .eq('id', editingBucket.id)
+        .eq('user_id', user.id)
 
       if (error) throw error
 
@@ -284,10 +288,13 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
     if (!confirm('Sei sicuro di voler eliminare questo salvadanaio?')) return
 
     try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+
       // PROTEZIONE NET-WORTH: Segniamo 'is_from_bucket' a true prima di sganciare il vincolo
-      const { error: unlinkError } = await supabase.from('transactions').update({ bucket_id: null, is_from_bucket: true }).eq('bucket_id', bucketId)
+      const { error: unlinkError } = await supabase.from('transactions').update({ bucket_id: null, is_from_bucket: true }).eq('bucket_id', bucketId).eq('user_id', user.id)
       if (unlinkError) throw unlinkError
-      const { error } = await supabase.from('buckets').delete().eq('id', bucketId)
+      const { error } = await supabase.from('buckets').delete().eq('id', bucketId).eq('user_id', user.id)
       if (error) throw error
       loadProfileAndBuckets()
     } catch (error) {

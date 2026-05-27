@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
+import { KeyRound, Lock, Eye, EyeOff } from 'lucide-react'
 import { supabase } from './lib/supabase'
 import Auth from './components/Auth'
 import Dashboard from './components/Dashboard'
@@ -27,6 +28,11 @@ function App() {
 
   const [profileUpdated, setProfileUpdated] = useState(0)
   const [isTransactionFormOpen, setIsTransactionFormOpen] = useState(false)
+  const [isRecoveryMode, setIsRecoveryMode] = useState(false)
+  const [newPassword, setNewPassword] = useState('')
+  const [showNewPassword, setShowNewPassword] = useState(false)
+  const [recoveryLoading, setRecoveryLoading] = useState(false)
+  const [recoveryError, setRecoveryError] = useState<string | null>(null)
 
   useEffect(() => {
     // 1. Controlla sessione
@@ -37,9 +43,13 @@ function App() {
     })
 
     // 2. Ascolta cambi auth
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session)
       if (session) loadUserTheme(session.user.id)
+      
+      if (event === 'PASSWORD_RECOVERY') {
+        setIsRecoveryMode(true)
+      }
     })
 
     return () => subscription.unsubscribe()
@@ -89,6 +99,22 @@ function App() {
 
   function handleAddTransaction() {
     setIsTransactionFormOpen(true)
+  }
+
+  async function handleUpdateRecoveryPassword(e: React.FormEvent) {
+    e.preventDefault()
+    setRecoveryLoading(true)
+    setRecoveryError(null)
+    try {
+      const { error } = await supabase.auth.updateUser({ password: newPassword })
+      if (error) throw error
+      setIsRecoveryMode(false)
+      alert("Password aggiornata con successo! Ora puoi navigare in sicurezza.")
+    } catch (err: any) {
+      setRecoveryError(err.message || 'Errore durante l\'aggiornamento della password.')
+    } finally {
+      setRecoveryLoading(false)
+    }
   }
 
   return (
@@ -170,6 +196,62 @@ function App() {
           }}
           primaryColor={primaryColor}
         />
+
+        {/* RECOVERY MODAL */}
+        {isRecoveryMode && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-gray-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+            <div className="bg-white rounded-3xl w-full max-w-sm p-6 shadow-2xl border border-gray-100 flex flex-col relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 to-indigo-500"></div>
+              
+              <div className="mx-auto w-12 h-12 bg-blue-50 rounded-full flex items-center justify-center mb-4">
+                <KeyRound className="w-6 h-6 text-blue-600" />
+              </div>
+              
+              <h2 className="text-xl font-bold text-gray-900 text-center mb-2">Reimposta Password</h2>
+              <p className="text-xs text-gray-500 text-center mb-6">Scegli una nuova password sicura per il tuo account.</p>
+
+              {recoveryError && (
+                <div className="mb-4 p-3 bg-red-50 text-red-600 text-xs font-medium rounded-xl border border-red-100">
+                  {recoveryError}
+                </div>
+              )}
+
+              <form onSubmit={handleUpdateRecoveryPassword} className="space-y-4">
+                <div>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+                      <Lock className="h-4 w-4 text-gray-400" />
+                    </div>
+                    <input
+                      type={showNewPassword ? "text" : "password"}
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      required
+                      minLength={6}
+                      className="block w-full pl-10 pr-10 py-3 bg-gray-50 border-transparent text-gray-900 placeholder-gray-400 focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent rounded-xl transition-all outline-none text-sm font-medium"
+                      placeholder="Nuova password..."
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowNewPassword(!showNewPassword)}
+                      className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-gray-400 hover:text-gray-600 transition-colors"
+                    >
+                      {showNewPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={recoveryLoading}
+                  className="w-full flex justify-center py-3.5 px-4 border border-transparent rounded-xl shadow-sm text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 transition-all active:scale-[0.98]"
+                >
+                  {recoveryLoading ? 'Aggiornamento...' : 'Salva Nuova Password'}
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
       </div>
     </PrivacyProvider>
   )

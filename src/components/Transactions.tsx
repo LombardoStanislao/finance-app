@@ -233,11 +233,11 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
             if (child.bucket_id) {
               const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', child.bucket_id).single()
               if (bucket) {
-                const newBalance = Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount))
-                await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', child.bucket_id)
+                const newBalance = Number((Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount))).toFixed(2))
+                await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', child.bucket_id).eq('user_id', user.id)
               }
             }
-            await supabase.from('transactions').delete().eq('id', child.id)
+            await supabase.from('transactions').delete().eq('id', child.id).eq('user_id', user.id)
           }
         }
 
@@ -256,11 +256,11 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
             if (child.bucket_id) {
               const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', child.bucket_id).single()
               if (bucket) {
-                const newBalance = Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount))
-                await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', child.bucket_id)
+                const newBalance = Number((Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount))).toFixed(2))
+                await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', child.bucket_id).eq('user_id', user.id)
               }
             }
-            await supabase.from('transactions').delete().eq('id', child.id)
+            await supabase.from('transactions').delete().eq('id', child.id).eq('user_id', user.id)
           }
         }
       }
@@ -286,15 +286,13 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
           if (siblings && siblings.length > 0) {
             for (const sib of siblings) {
               if (sib.bucket_id) {
-                const { data: b } = await supabase.from('buckets').select('current_balance').eq('id', sib.bucket_id).single()
-                if (b) {
-                  let nBalance = b.current_balance || 0
-                  if (sib.amount < 0) nBalance -= Math.abs(sib.amount) // Era un deposito, togli
-                  else nBalance += Math.abs(sib.amount) // Era un prelievo, ridai
-                  await supabase.from('buckets').update({ current_balance: Math.max(0, nBalance) }).eq('id', sib.bucket_id)
+                const { data: sibB } = await supabase.from('buckets').select('current_balance').eq('id', sib.bucket_id).eq('user_id', user.id).single()
+                if (sibB) {
+                  const nBalance = Number(((sibB.current_balance || 0) + (sib.amount < 0 ? -Math.abs(sib.amount) : Math.abs(sib.amount))).toFixed(2))
+                  await supabase.from('buckets').update({ current_balance: Math.max(0, nBalance) }).eq('id', sib.bucket_id).eq('user_id', user.id)
                 }
               }
-              await supabase.from('transactions').delete().eq('id', sib.id)
+              await supabase.from('transactions').delete().eq('id', sib.id).eq('user_id', user.id)
             }
           }
         }
@@ -304,6 +302,7 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
           .from('buckets')
           .select('current_balance')
           .eq('id', transaction.bucket_id)
+          .eq('user_id', user.id)
           .single()
 
         if (bucket) {
@@ -311,25 +310,26 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
           let newBalance = bucket.current_balance || 0
 
           if (transaction.type === 'expense') {
-            newBalance += amountAbs // Restituisce i fondi al salvadanaio
+            newBalance += amountAbs
           } else if (transaction.type === 'transfer') {
             if (transaction.amount < 0) {
-              newBalance -= amountAbs // Se era entrato nel salvadanaio, sottrarli
+              newBalance -= amountAbs
             } else {
-              newBalance += amountAbs // Se era prelievo dal salvadanaio, ridarli
+              newBalance += amountAbs
             }
           }
 
           await supabase
             .from('buckets')
-            .update({ current_balance: Math.max(0, newBalance) })
+            .update({ current_balance: Math.max(0, Number(newBalance.toFixed(2))) })
             .eq('id', transaction.bucket_id)
+            .eq('user_id', user.id)
         }
       }
 
       // Elimina transazione principale
-      const { error } = await supabase.from('transactions').delete().eq('id', transaction.id)
-      if (error) throw error
+      const { error: mainError } = await supabase.from('transactions').delete().eq('id', transaction.id).eq('user_id', user.id)
+      if (mainError) throw mainError
 
       loadTransactions()
     } catch (error: any) {

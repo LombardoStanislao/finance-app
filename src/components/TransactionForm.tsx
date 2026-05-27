@@ -253,7 +253,8 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
             share = Math.round((share + Number.EPSILON) * 100) / 100
 
             if (share > 0) {
-                await supabase.from('buckets').update({ current_balance: (bucket.current_balance || 0) + share }).eq('id', bucket.id)
+                const newBBal = Number(((bucket.current_balance || 0) + share).toFixed(2))
+                await supabase.from('buckets').update({ current_balance: newBBal }).eq('id', bucket.id).eq('user_id', userId)
                 await supabase.from('transactions').insert({ user_id: userId, amount: -Math.abs(share), type: 'transfer', description: `Distribuzione automatica a ${bucket.name}`, date: transactionDate, bucket_id: bucket.id, created_at: new Date().toISOString() })
                 remainingToDistribute -= share
             }
@@ -284,18 +285,21 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
 
                 if (transferSource === 'liquidity') {
                     const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', transferDestination).single()
-                    await supabase.from('buckets').update({ current_balance: (bucket?.current_balance || 0) + amountVal }).eq('id', transferDestination)
+                    const newBBal = Number(((bucket?.current_balance || 0) + amountVal).toFixed(2))
+                    await supabase.from('buckets').update({ current_balance: newBBal }).eq('id', transferDestination).eq('user_id', user.id)
                     await supabase.from('transactions').insert({ user_id: user.id, amount: -Math.abs(amountVal), type: 'transfer', description: `Trasferimento a ${buckets.find(b => b.id === transferDestination)?.name}`, date: new Date(date).toISOString(), bucket_id: transferDestination })
                 } else {
                     const { data: sourceBucket } = await supabase.from('buckets').select('current_balance').eq('id', transferSource).single()
                     if ((sourceBucket?.current_balance || 0) < amountVal) throw new Error('Saldo insufficiente nel salvadanaio')
-                    await supabase.from('buckets').update({ current_balance: (sourceBucket?.current_balance || 0) - amountVal }).eq('id', transferSource)
+                    const newSBal = Number(((sourceBucket?.current_balance || 0) - amountVal).toFixed(2))
+                    await supabase.from('buckets').update({ current_balance: newSBal }).eq('id', transferSource).eq('user_id', user.id)
 
                     if (transferDestination === 'liquidity') {
                         await supabase.from('transactions').insert({ user_id: user.id, amount: Math.abs(amountVal), type: 'transfer', description: `Prelievo da ${buckets.find(b => b.id === transferSource)?.name}`, date: new Date(date).toISOString(), bucket_id: transferSource })
                     } else {
                         const { data: destBucket } = await supabase.from('buckets').select('current_balance').eq('id', transferDestination).single()
-                        await supabase.from('buckets').update({ current_balance: (destBucket?.current_balance || 0) + amountVal }).eq('id', transferDestination)
+                        const newDBal = Number(((destBucket?.current_balance || 0) + amountVal).toFixed(2))
+                        await supabase.from('buckets').update({ current_balance: newDBal }).eq('id', transferDestination).eq('user_id', user.id)
 
                         // NEW: INSERT BOTH TRANSACTIONS FOR BUCKET-TO-BUCKET
                         const nowStr = new Date().toISOString()
@@ -316,7 +320,8 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                         const { data: oldBucket } = await supabase.from('buckets').select('current_balance').eq('id', editingTransaction.bucket_id).single()
                         if (oldBucket) {
                             const revertAmount = editingTransaction.type === 'expense' ? Math.abs(editingTransaction.amount) : -Math.abs(editingTransaction.amount)
-                            await supabase.from('buckets').update({ current_balance: Math.max(0, (oldBucket.current_balance || 0) + revertAmount) }).eq('id', editingTransaction.bucket_id)
+                            const oldNewBal = Number((Math.max(0, (oldBucket.current_balance || 0) + revertAmount)).toFixed(2))
+                            await supabase.from('buckets').update({ current_balance: oldNewBal }).eq('id', editingTransaction.bucket_id).eq('user_id', user.id)
                         }
                     }
 
@@ -325,7 +330,8 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                         const { data: newBucket } = await supabase.from('buckets').select('current_balance').eq('id', bucketId).single()
                         if (newBucket) {
                             const applyAmount = type === 'expense' ? -Math.abs(amountVal) : Math.abs(amountVal)
-                            await supabase.from('buckets').update({ current_balance: Math.max(0, (newBucket.current_balance || 0) + applyAmount) }).eq('id', bucketId)
+                            const appliedBal = Number((Math.max(0, (newBucket.current_balance || 0) + applyAmount)).toFixed(2))
+                            await supabase.from('buckets').update({ current_balance: appliedBal }).eq('id', bucketId).eq('user_id', user.id)
                         }
                     }
 
@@ -360,10 +366,16 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                         // Flusso Attuale/Passato
                         if (type === 'expense' && bucketId) {
                             const { data: buck } = await supabase.from('buckets').select('current_balance').eq('id', bucketId).single()
-                            if (buck) await supabase.from('buckets').update({ current_balance: Math.max(0, (buck.current_balance || 0) - amountVal) }).eq('id', bucketId)
+                            if (buck) {
+                                const bBal = Number((Math.max(0, (buck.current_balance || 0) - amountVal)).toFixed(2))
+                                await supabase.from('buckets').update({ current_balance: bBal }).eq('id', bucketId).eq('user_id', user.id)
+                            }
                         } else if (type === 'income' && bucketId) {
                             const { data: buck } = await supabase.from('buckets').select('current_balance').eq('id', bucketId).single()
-                            if (buck) await supabase.from('buckets').update({ current_balance: (buck.current_balance || 0) + amountVal }).eq('id', bucketId)
+                            if (buck) {
+                                const bBal = Number(((buck.current_balance || 0) + amountVal).toFixed(2))
+                                await supabase.from('buckets').update({ current_balance: bBal }).eq('id', bucketId).eq('user_id', user.id)
+                            }
                         }
 
                         const { data: newTx, error: txError } = await supabase.from('transactions').insert({
@@ -411,8 +423,10 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                             const { data: inpsB } = await supabase.from('buckets').select('current_balance').eq('id', inpsBucketId).single()
                             const { data: taxB } = await supabase.from('buckets').select('current_balance').eq('id', taxBucketId).single()
 
-                            await supabase.from('buckets').update({ current_balance: (inpsB?.current_balance || 0) + taxCalculations.inps }).eq('id', inpsBucketId)
-                            await supabase.from('buckets').update({ current_balance: (taxB?.current_balance || 0) + taxCalculations.tax }).eq('id', taxBucketId)
+                            const nInps = Number(((inpsB?.current_balance || 0) + taxCalculations.inps).toFixed(2))
+                            await supabase.from('buckets').update({ current_balance: nInps }).eq('id', inpsBucketId).eq('user_id', user.id)
+                            const nTax = Number(((taxB?.current_balance || 0) + taxCalculations.tax).toFixed(2))
+                            await supabase.from('buckets').update({ current_balance: nTax }).eq('id', taxBucketId).eq('user_id', user.id)
 
                             await supabase.from('transactions').insert([
                                 { user_id: user.id, amount: -Math.abs(taxCalculations.inps), type: 'transfer', description: `Accantonamento INPS (Fattura)`, date: new Date(date).toISOString(), bucket_id: inpsBucketId, created_at: newTx.created_at }, // Sync time
@@ -555,32 +569,31 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                                 </div>
                             </div>
 
-                            {!editingId && type !== 'transfer' && (
-                                <div className="p-4 bg-purple-50/50 border border-purple-100 rounded-2xl space-y-3">
-                                    <div className="flex items-center justify-between">
-                                        <div className="flex items-center gap-2">
-                                            <div className="bg-purple-100 p-2 rounded-xl text-purple-600"><Calendar className="w-4 h-4" /></div>
-                                            <label className="text-sm font-bold text-gray-900">Rendi Ricorrente</label>
-                                        </div>
-                                        <button type="button" onClick={() => setIsRecurring(!isRecurring)} className={cn("relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2", isRecurring ? "bg-purple-600" : "bg-gray-200")}>
-                                            <span className={cn("inline-block h-4 w-4 transform rounded-full bg-white transition-transform", isRecurring ? "translate-x-6" : "translate-x-1")} />
-                                        </button>
-                                    </div>
+                            {/* Rendi Ricorrente spostato in basso */}
 
-                                    {isRecurring && (
-                                        <div className="animate-in fade-in slide-in-from-top-2 space-y-3">
-                                            <select value={recurrenceRule} onChange={(e) => setRecurrenceRule(e.target.value as any)} className="w-full px-4 py-3 bg-white text-gray-900 font-medium rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-purple-500">
-                                                <option value="daily">Ogni Giorno</option>
-                                                <option value="weekly">Ogni Settimana</option>
-                                                <option value="monthly">Ogni Mese</option>
-                                                <option value="yearly">Ogni Anno</option>
-                                            </select>
-                                            <div>
-                                                <label className="text-[10px] font-bold text-purple-400 uppercase ml-1 block mb-1">Data Fine (Opzionale)</label>
-                                                <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full px-4 py-3 bg-white text-gray-900 font-medium rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-purple-500" />
-                                            </div>
-                                        </div>
-                                    )}
+                            {type === 'expense' && !editingId && buckets.length > 0 && (
+                                <div className="flex items-center gap-3 p-3 rounded-xl bg-gray-50 border border-gray-100">
+                                    <PieChart className="w-5 h-5 text-gray-400" />
+                                    <div className="flex-1">
+                                        <label className="text-xs font-bold text-gray-700 block">Preleva da Salvadanaio</label>
+                                        <select value={bucketId} onChange={(e) => setBucketId(e.target.value)} className="w-full mt-1 bg-transparent text-sm text-gray-600 outline-none">
+                                            <option value="">Nessuno (Usa Liquidità)</option>
+                                            {buckets.map((b) => <option key={b.id} value={b.id}>{b.name} ({formatCurrency(b.current_balance || 0)})</option>)}
+                                        </select>
+                                    </div>
+                                </div>
+                            )}
+
+                            {type === 'income' && !editingId && buckets.some(b => b.distribution_percentage > 0 && !['Aliquota INPS', 'Aliquota Imposta Sostitutiva'].includes(b.name)) && (
+                                <div className="flex items-center justify-between p-3 rounded-xl bg-blue-50 border border-blue-100">
+                                    <div className="flex items-center gap-3">
+                                        <PiggyBank className="w-5 h-5 text-blue-600" />
+                                        <div><p className="text-xs font-bold text-blue-900">Divisione Automatica</p><p className="text-[10px] text-blue-600">Distribuisci {isInvoice ? 'il netto' : 'il totale'} nei salvadanai</p></div>
+                                    </div>
+                                    <label className="relative inline-flex items-center cursor-pointer">
+                                        <input type="checkbox" className="sr-only peer" checked={applyAutoSplit} onChange={() => setApplyAutoSplit(!applyAutoSplit)} />
+                                        <div className="w-9 h-5 bg-blue-200 peer-focus:outline-none rounded-full peer peer-checked:bg-blue-600 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all"></div>
+                                    </label>
                                 </div>
                             )}
 
@@ -622,29 +635,34 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                                 </div>
                             )}
 
-                            {type === 'expense' && !editingId && buckets.length > 0 && (
-                                <div className="flex items-center gap-3 p-3 rounded-xl bg-gray-50 border border-gray-100">
-                                    <PieChart className="w-5 h-5 text-gray-400" />
-                                    <div className="flex-1">
-                                        <label className="text-xs font-bold text-gray-700 block">Preleva da Salvadanaio</label>
-                                        <select value={bucketId} onChange={(e) => setBucketId(e.target.value)} className="w-full mt-1 bg-transparent text-sm text-gray-600 outline-none">
-                                            <option value="">Nessuno (Usa Liquidità)</option>
-                                            {buckets.map((b) => <option key={b.id} value={b.id}>{b.name} ({formatCurrency(b.current_balance || 0)})</option>)}
-                                        </select>
-                                    </div>
-                                </div>
-                            )}
+                            {/* I salvadanai sono stati spostati sopra la Descrizione */}
 
-                            {type === 'income' && !editingId && buckets.some(b => b.distribution_percentage > 0 && !['Aliquota INPS', 'Aliquota Imposta Sostitutiva'].includes(b.name)) && (
-                                <div className="flex items-center justify-between p-3 rounded-xl bg-blue-50 border border-blue-100">
-                                    <div className="flex items-center gap-3">
-                                        <PiggyBank className="w-5 h-5 text-blue-600" />
-                                        <div><p className="text-xs font-bold text-blue-900">Divisione Automatica</p><p className="text-[10px] text-blue-600">Distribuisci {isInvoice ? 'il netto' : 'il totale'} nei salvadanai</p></div>
+                            {!editingId && type !== 'transfer' && (
+                                <div className="p-4 bg-purple-50/50 border border-purple-100 rounded-2xl space-y-3">
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-2">
+                                            <div className="bg-purple-100 p-2 rounded-xl text-purple-600"><Calendar className="w-4 h-4" /></div>
+                                            <label className="text-sm font-bold text-gray-900">Rendi Ricorrente</label>
+                                        </div>
+                                        <button type="button" onClick={() => setIsRecurring(!isRecurring)} className={cn("relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2", isRecurring ? "bg-purple-600" : "bg-gray-200")}>
+                                            <span className={cn("inline-block h-4 w-4 transform rounded-full bg-white transition-transform", isRecurring ? "translate-x-6" : "translate-x-1")} />
+                                        </button>
                                     </div>
-                                    <label className="relative inline-flex items-center cursor-pointer">
-                                        <input type="checkbox" className="sr-only peer" checked={applyAutoSplit} onChange={() => setApplyAutoSplit(!applyAutoSplit)} />
-                                        <div className="w-9 h-5 bg-blue-200 peer-focus:outline-none rounded-full peer peer-checked:bg-blue-600 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all"></div>
-                                    </label>
+
+                                    {isRecurring && (
+                                        <div className="animate-in fade-in slide-in-from-top-2 space-y-3">
+                                            <select value={recurrenceRule} onChange={(e) => setRecurrenceRule(e.target.value as any)} className="w-full px-4 py-3 bg-white text-gray-900 font-medium rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-purple-500">
+                                                <option value="daily">Ogni Giorno</option>
+                                                <option value="weekly">Ogni Settimana</option>
+                                                <option value="monthly">Ogni Mese</option>
+                                                <option value="yearly">Ogni Anno</option>
+                                            </select>
+                                            <div>
+                                                <label className="text-[10px] font-bold text-purple-400 uppercase ml-1 block mb-1">Data Fine (Opzionale)</label>
+                                                <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full px-4 py-3 bg-white text-gray-900 font-medium rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-purple-500" />
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             )}
                         </div>

@@ -90,7 +90,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
       const totalBuckets = bucketsList.reduce((sum, b) => sum + (b.current_balance || 0), 0)
       const totalInvestments = investmentsList.reduce((sum, i) => sum + (i.current_value || 0), 0)
       setInvestmentsTotal(totalInvestments)
-      setNetWorth(totalLiquidity + totalBuckets + totalInvestments)
+      setNetWorth(Number((totalLiquidity + totalBuckets + totalInvestments).toFixed(2)))
 
       // 4. Mese Corrente
       const now = new Date()
@@ -104,7 +104,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
         const d = new Date(t.date).toISOString()
         const isTradingPL = t.investment_id !== null && (t.type === 'income' || t.type === 'expense')
 
-        if (d >= monthStart && d <= monthEnd && !isTradingPL) {
+        if (d >= monthStart && d <= monthEnd) {
           const val = Number(t.amount) || 0
           if (t.type === 'income') mIncome += val
           else if (t.type === 'expense') mExpenses += Math.abs(val)
@@ -210,6 +210,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
             if (currentQty > 0) {
                 const pricePerShare = investment.current_value / currentQty
                 newCurrentValue = (Math.round((pricePerShare * newQty) * 100) / 100)
+                newCurrentValue = Number((pricePerShare * newQty).toFixed(2))
             } else if (newQty > 0) {
                 newCurrentValue = newInvested
             }
@@ -218,7 +219,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                 quantity: newQty,
                 invested_amount: newInvested,
                 current_value: newCurrentValue
-            }).eq('id', investment.id)
+            }).eq('id', investment.id).eq('user_id', user.id)
 
             fetchData()
             return // Usciamo per non triggerare altra logica di cancellazione o causare crash
@@ -235,9 +236,12 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
           for (const child of children) {
             if (child.bucket_id) {
               const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', child.bucket_id).single()
-              if (bucket) await supabase.from('buckets').update({ current_balance: Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount)) }).eq('id', child.bucket_id)
+              if (bucket) {
+                const decurtato = Number((Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount))).toFixed(2))
+                await supabase.from('buckets').update({ current_balance: decurtato }).eq('id', child.bucket_id).eq('user_id', user.id)
+              }
             }
-            await supabase.from('transactions').delete().eq('id', child.id)
+            await supabase.from('transactions').delete().eq('id', child.id).eq('user_id', user.id)
           }
         }
         const { data: taxChildren } = await supabase.from('transactions').select('*').eq('user_id', user.id).eq('type', 'transfer').ilike('description', 'Accantonamento % (Fattura)').gte('created_at', timeStart).lte('created_at', timeEnd)
@@ -246,19 +250,22 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
             if (child.bucket_id) {
               const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', child.bucket_id).single()
               if (bucket) {
-                const newBalance = Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount))
-                await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', child.bucket_id)
+                const newBalance = Number((Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount))).toFixed(2))
+                await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', child.bucket_id).eq('user_id', user.id)
               }
             }
-            await supabase.from('transactions').delete().eq('id', child.id)
+            await supabase.from('transactions').delete().eq('id', child.id).eq('user_id', user.id)
           }
         }
       } else if ((transaction.type === 'expense' || transaction.type === 'transfer') && transaction.bucket_id) {
         const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', transaction.bucket_id).single()
-        if (bucket) await supabase.from('buckets').update({ current_balance: (bucket.current_balance || 0) + Math.abs(transaction.amount) }).eq('id', transaction.bucket_id)
+        if (bucket) {
+            const returnedBal = Number(((bucket.current_balance || 0) + Math.abs(transaction.amount)).toFixed(2))
+            await supabase.from('buckets').update({ current_balance: returnedBal }).eq('id', transaction.bucket_id).eq('user_id', user.id)
+        }
       }
 
-      await supabase.from('transactions').delete().eq('id', transaction.id)
+      await supabase.from('transactions').delete().eq('id', transaction.id).eq('user_id', user.id)
       fetchData()
     } catch (error) { console.error(error); alert('Errore durante l\'eliminazione') }
   }

@@ -195,22 +195,23 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
       if (pieRange === 'MONTH') {
         const sm = String(selectedMonth).padStart(2, '0')
         const lastDay = new Date(selectedYear, selectedMonth, 0).getDate()
-        startDate = `${selectedYear}-${sm}-01`
-        endDate = `${selectedYear}-${sm}-${lastDay}`
+        startDate = `${selectedYear}-${sm}-01T00:00:00`
+        endDate = `${selectedYear}-${sm}-${lastDay}T23:59:59`
       } else if (pieRange === '6M') {
         const now = new Date()
-        const sm = String(now.getMonth() + 1).padStart(2, '0')
-        // Togliamo 5 mesi pieni e filtriamo per il primo del mese risultante. Così prendiamo sempre mesi interi.
         const prev = new Date(now.getFullYear(), now.getMonth() - 5, 1)
-        startDate = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}-01`
-        endDate = `${now.getFullYear()}-${sm}-${String(new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate())}`
+        const smStart = String(prev.getMonth() + 1).padStart(2, '0')
+        const smEnd = String(now.getMonth() + 1).padStart(2, '0')
+        const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
+        startDate = `${prev.getFullYear()}-${smStart}-01T00:00:00`
+        endDate = `${now.getFullYear()}-${smEnd}-${lastDay}T23:59:59`
       } else if (pieRange === 'YEAR') {
-        startDate = `${selectedYear}-01-01`
-        endDate = `${selectedYear}-12-31`
+        startDate = `${selectedYear}-01-01T00:00:00`
+        endDate = `${selectedYear}-12-31T23:59:59`
       } else {
         if (!customStart || !customEnd) { setLoading(false); return }
-        startDate = customStart
-        endDate = customEnd
+        startDate = `${customStart}T00:00:00`
+        endDate = `${customEnd}T23:59:59`
       }
 
       const { data, error } = await supabase
@@ -336,8 +337,7 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
       const amount = Number(t.amount)
       const absAmount = Math.abs(amount)
 
-      const d = new Date(t.date)
-      const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+      const dateKey = t.date.substring(0, 7) // "YYYY-MM" dal prefisso ISO
 
       if (!cfMap.has(dateKey)) cfMap.set(dateKey, { inc: 0, exp: 0, tax: 0 })
       const cfEntry = cfMap.get(dateKey)!

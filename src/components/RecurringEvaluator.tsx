@@ -88,14 +88,16 @@ export default function RecurringEvaluator({ session }: { session: Session | nul
                         if (rec.type === 'expense' && rec.bucket_id) {
                             const { data: buck } = await supabase.from('buckets').select('current_balance').eq('id', rec.bucket_id).single()
                             if (buck) {
-                                await supabase.from('buckets').update({ current_balance: Math.max(0, (buck.current_balance || 0) - Math.abs(rec.amount)) }).eq('id', rec.bucket_id)
+                                const newBalance = Number((Math.max(0, (buck.current_balance || 0) - Math.abs(rec.amount))).toFixed(2))
+                                await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', rec.bucket_id).eq('user_id', user.id)
                             }
                         }
 
                         if (rec.type === 'income' && rec.bucket_id) {
                             const { data: buck } = await supabase.from('buckets').select('current_balance').eq('id', rec.bucket_id).single()
                             if (buck) {
-                                await supabase.from('buckets').update({ current_balance: (buck.current_balance || 0) + Math.abs(rec.amount) }).eq('id', rec.bucket_id)
+                                const newBalance = Number(((buck.current_balance || 0) + Math.abs(rec.amount)).toFixed(2))
+                                await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', rec.bucket_id).eq('user_id', user.id)
                             }
                         }
 

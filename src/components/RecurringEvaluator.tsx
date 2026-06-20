@@ -31,7 +31,7 @@ export default function RecurringEvaluator({ session }: { session: Session | nul
 
                     // Fase 1: DRY RUN (Raccogliamo i salti e cerchiamo la finalNextDate)
                     while (currentDateStr <= today && iterations < 365) {
-                        
+
                         if (rec.end_date && currentDateStr > rec.end_date) {
                             // Se la prossima esecuzione scavalca la fine, fermiamo il ciclo
                             break;
@@ -82,41 +82,42 @@ export default function RecurringEvaluator({ session }: { session: Session | nul
                     }
 
                     // Fase 3: ESECUZIONE (Sicuri di non sdoppiare le tuple)
+                    const p_transactions_insert: any[] = []
+                    const p_bucket_updates: any[] = []
+
                     for (const txDateStr of txDatesToInsert) {
-                        
-                        // Manipolazione Salvadanai
-                        if (rec.type === 'expense' && rec.bucket_id) {
-                            const { data: buck } = await supabase.from('buckets').select('current_balance').eq('id', rec.bucket_id).single()
-                            if (buck) {
-                                const newBalance = Number((Math.max(0, (buck.current_balance || 0) - Math.abs(rec.amount))).toFixed(2))
-                                await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', rec.bucket_id).eq('user_id', user.id)
-                            }
-                        }
-
-                        if (rec.type === 'income' && rec.bucket_id) {
-                            const { data: buck } = await supabase.from('buckets').select('current_balance').eq('id', rec.bucket_id).single()
-                            if (buck) {
-                                const newBalance = Number(((buck.current_balance || 0) + Math.abs(rec.amount)).toFixed(2))
-                                await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', rec.bucket_id).eq('user_id', user.id)
-                            }
-                        }
-
                         const finalAmount = rec.type === 'expense' ? -Math.abs(rec.amount) : Math.abs(rec.amount)
+                        
+                        if (rec.bucket_id) {
+                            p_bucket_updates.push({
+                                bucket_id: rec.bucket_id,
+                                amount_change: finalAmount
+                            })
+                        }
 
                         // Il txDate (stringa locale YYYY-MM-DD) convertita in ISO preservando orari safe (mezzogiorno) evita disallineamenti db in order by date.
                         const [y, m, d] = txDateStr.split('-').map(Number)
                         const safeIsoDate = new Date(y, m - 1, d, 12, 0, 0).toISOString()
 
-                        await supabase.from('transactions').insert({
-                            user_id: session!.user.id,
+                        p_transactions_insert.push({
                             amount: finalAmount,
                             type: rec.type,
                             category_id: rec.category_id,
                             bucket_id: rec.bucket_id,
                             description: rec.description || 'Transazione Ricorrente',
-                            date: safeIsoDate, 
+                            date: safeIsoDate,
                             is_recurring: true
                         })
+                    }
+
+                    if (p_transactions_insert.length > 0) {
+                        const { error: rpcError } = await supabase.rpc('execute_financial_operations', {
+                            p_transactions_insert,
+                            p_transactions_update: [],
+                            p_transactions_delete: [],
+                            p_bucket_updates
+                        })
+                        if (rpcError) console.error("RPC Error:", rpcError)
                     }
                 }
             } catch (e) {

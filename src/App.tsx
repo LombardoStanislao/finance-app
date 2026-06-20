@@ -1,5 +1,5 @@
+/// <reference types="vite-plugin-pwa/client" />
 import { useEffect, useState } from 'react'
-import type { Session } from '@supabase/supabase-js'
 import { KeyRound, Lock, Eye, EyeOff } from 'lucide-react'
 import { supabase } from './lib/supabase'
 import Auth from './components/Auth'
@@ -13,14 +13,15 @@ import GuidePage from './components/GuidePage'
 import BottomNav from './components/BottomNav'
 import TransactionForm from './components/TransactionForm'
 import RecurringEvaluator from './components/RecurringEvaluator'
-import { PrivacyProvider } from './context/PrivacyContext' // Import del Context
+import { Toaster } from 'react-hot-toast'
+import { useAuth } from './context/AuthContext'
+import { useRegisterSW } from 'virtual:pwa-register/react'
 import './App.css'
 
 type View = 'dashboard' | 'settings' | 'transactions' | 'buckets' | 'statistics' | 'investments' | 'guide'
 
 function App() {
-  const [session, setSession] = useState<Session | null>(null)
-  const [loading, setLoading] = useState(true)
+  const { session, loading } = useAuth()
   const [currentView, setCurrentView] = useState<View>('dashboard')
 
   // Default iniziale (Blu) finché non carichiamo il profilo
@@ -34,24 +35,26 @@ function App() {
   const [recoveryLoading, setRecoveryLoading] = useState(false)
   const [recoveryError, setRecoveryError] = useState<string | null>(null)
 
-  useEffect(() => {
-    // 1. Controlla sessione
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session)
-      if (session) loadUserTheme(session.user.id)
-      setLoading(false)
-    })
+  const {
+    needRefresh: [needRefresh, setNeedRefresh],
+    updateServiceWorker,
+  } = useRegisterSW({
+    onRegistered(_r: any) { console.log('SW Registered') },
+    onRegisterError(error: any) { console.log('SW registration error', error) },
+  })
 
-    // 2. Ascolta cambi auth
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      setSession(session)
-      if (session) loadUserTheme(session.user.id)
-      
+  useEffect(() => {
+    if (session?.user?.id) {
+      loadUserTheme(session.user.id)
+    }
+  }, [session?.user?.id])
+
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
       if (event === 'PASSWORD_RECOVERY') {
         setIsRecoveryMode(true)
       }
     })
-
     return () => subscription.unsubscribe()
   }, [])
 
@@ -118,8 +121,8 @@ function App() {
   }
 
   return (
-    <PrivacyProvider>
       <div className="min-h-screen bg-gray-50 flex flex-col">
+        <Toaster position="top-center" toastOptions={{ duration: 4000, style: { background: '#333', color: '#fff', borderRadius: '12px' } }} />
         <RecurringEvaluator session={session} />
         <main className="flex-1 pb-20">
 
@@ -252,8 +255,21 @@ function App() {
             </div>
           </div>
         )}
+
+        {/* PWA UPDATE PROMPT */}
+        {needRefresh && (
+          <div className="fixed bottom-24 left-4 right-4 sm:left-auto sm:right-6 sm:w-80 z-[200] bg-white border border-gray-100 p-4 rounded-2xl shadow-xl flex items-center justify-between animate-in slide-in-from-bottom-5">
+            <div className="flex flex-col">
+              <span className="text-sm font-bold text-gray-900">Aggiornamento app</span>
+              <span className="text-xs text-gray-500">Nuova versione disponibile.</span>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setNeedRefresh(false)} className="px-3 py-1.5 text-xs font-medium text-gray-500 bg-gray-100 rounded-lg hover:bg-gray-200">Ignora</button>
+              <button onClick={() => updateServiceWorker(true)} className="px-3 py-1.5 text-xs font-bold text-white bg-blue-600 rounded-lg hover:bg-blue-700">Ricarica</button>
+            </div>
+          </div>
+        )}
       </div>
-    </PrivacyProvider>
   )
 }
 

@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
-import { TrendingUp, TrendingDown, Wallet, PiggyBank, Trash2, Settings, ArrowRightLeft, AlertTriangle, CheckCircle2, ShoppingBag, BookOpen, Eye, EyeOff } from 'lucide-react'
+import { TrendingUp, TrendingDown, Wallet, PiggyBank, Trash2, Settings, ArrowRightLeft, BookOpen, Eye, EyeOff } from 'lucide-react'
+import toast from 'react-hot-toast'
 import { supabase, type Transaction, type Category } from '../lib/supabase'
-import { formatCurrency, formatDate, cn, calculateLiquidity } from '../lib/utils'
+import { formatDate, cn, calculateLiquidity, roundCurrency } from '../lib/utils'
 import TransactionForm from './TransactionForm'
 import { ErrorBoundary } from '../ErrorBoundary'
 import { usePrivacy } from '../context/PrivacyContext'
+import { useAuth } from '../context/AuthContext'
 
 // Hook per i contatori animati
 function useCountUp(end: number, duration: number = 1200) {
@@ -56,44 +58,32 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
   const [isTransactionFormOpen, setIsTransactionFormOpen] = useState(false)
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null)
 
-  // HOOK PRIVACY
-  const { isPrivacyEnabled, togglePrivacy } = usePrivacy()
-
-  // Helper per nascondere i dati
-  const hide = (value: number | string, isCurrency = true) => {
-    if (isPrivacyEnabled) return '****'
-    if (typeof value === 'number' && isCurrency) return formatCurrency(value)
-    return value
-  }
+  // HOOK PRIVACY E AUTH
+  const { isPrivacyEnabled, togglePrivacy, hide } = usePrivacy()
+  const { user } = useAuth()
 
   useEffect(() => {
-    loadUser()
-    fetchData()
-  }, [profileUpdated])
-
-  async function loadUser() {
-    const { data: { user } } = await supabase.auth.getUser()
-    const name = user?.user_metadata?.display_name
-    setDisplayName(name || user?.email?.split('@')[0] || 'Utente')
-  }
+    if (user) {
+        const name = user?.user_metadata?.display_name
+        setDisplayName(name || user?.email?.split('@')[0] || 'Utente')
+        fetchData()
+    }
+  }, [user, profileUpdated])
 
   async function fetchData() {
     try {
       setLoading(true)
-      const { data: { user } } = await supabase.auth.getUser()
       if (!user) { setLoading(false); return }
 
       // 1. Fetch Dati
-      const [catRes, transRes, buckRes, invRes] = await Promise.all([
+      const [catRes, transRes, invRes] = await Promise.all([
         supabase.from('categories').select('*').eq('user_id', user.id),
         supabase.from('transactions').select('*').eq('user_id', user.id).order('date', { ascending: false }).order('created_at', { ascending: false }),
-        supabase.from('buckets').select('*').eq('user_id', user.id),
         supabase.from('investments').select('*').eq('user_id', user.id)
       ])
 
       const categoriesList = catRes.data || []
       const transactions = transRes.data || []
-      const bucketsList = buckRes.data || []
       const investmentsList = invRes.data || []
 
       setCategories(categoriesList)
@@ -109,10 +99,11 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
       setLiquidity(totalLiquidity)
 
       // 3. Totali Patrimonio
-      const totalBuckets = bucketsList.reduce((sum, b) => sum + (b.current_balance || 0), 0)
+      // I buckets (salvadanai) sono liquidità accantonata, NON patrimonio aggiuntivo.
+      // Non vanno sommati al netWorth per evitare doppio conteggio.
       const totalInvestments = investmentsList.reduce((sum, i) => sum + (i.current_value || 0), 0)
       setInvestmentsTotal(totalInvestments)
-      setNetWorth(Number((totalLiquidity + totalBuckets + totalInvestments).toFixed(2)))
+      setNetWorth(roundCurrency(totalLiquidity + totalInvestments))
 
       // 4. Mese Corrente
       const now = new Date()
@@ -181,10 +172,17 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
   // --- LOGICA DI ROLLBACK & PROTEZIONE ---
   async function handleDeleteTransaction(transaction: Transaction, e: React.MouseEvent) {
     e.stopPropagation()
+
+    // 1. BLOCCO SICUREZZA P.IVA
     if (transaction.type === 'transfer' && transaction.bucket_id) {
-      const { data: bucketCheck } = await supabase.from('buckets').select('name').eq('id', transaction.bucket_id).single()
+      const { data: bucketCheck } = await supabase
+        .from('buckets')
+        .select('name')
+        .eq('id', transaction.bucket_id)
+        .single()
+
       if (bucketCheck && ['Aliquota INPS', 'Aliquota Imposta Sostitutiva'].includes(bucketCheck.name)) {
-        alert("🚫 AZIONE BLOCCATA\n\nNon puoi eliminare manualmente un singolo accantonamento fiscale.\n\nPer annullare questa operazione, devi eliminare la transazione di Entrata (Fattura) originale che l'ha generato.")
+        toast.error("Non puoi eliminare manualmente un singolo accantonamento fiscale.\n\nPer annullare questa operazione, devi eliminare la transazione di Entrata (Fattura) originale che l'ha generato.", { duration: 6000 })
         return
       }
     }
@@ -192,11 +190,16 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
     if (!window.confirm('Eliminare questa transazione? L\'operazione annullerà anche eventuali movimenti collegati.')) return
 
     try {
-      const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
 
+      // 2. GESTIONE INVESTIMENTO (Atomic Group Delete)
       if (transaction.investment_id) {
-        const { data: investment } = await supabase.from('investments').select('*').eq('id', transaction.investment_id).single()
+        const { data: investment } = await supabase
+          .from('investments')
+          .select('*')
+          .eq('id', transaction.investment_id)
+          .single()
+
         if (investment) {
           const txTime = new Date(transaction.created_at || transaction.date).getTime()
           const timeStart = new Date(txTime - 2000).toISOString()
@@ -216,7 +219,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
             for (const sib of siblings) {
                 if (sib.type === 'transfer') totalInvestedToRevert += sib.amount
                 if ((sib as any).asset_quantity) totalQtyToRevert += (sib as any).asset_quantity
-                await supabase.from('transactions').delete().eq('id', sib.id)
+                await supabase.from('transactions').delete().eq('id', sib.id) 
             }
 
             const currentQty = investment.quantity || 0
@@ -227,7 +230,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
             let newCurrentValue = 0
             if (currentQty > 0) {
                 const pricePerShare = investment.current_value / currentQty
-                newCurrentValue = Number((pricePerShare * newQty).toFixed(2))
+                newCurrentValue = (Math.round((pricePerShare * newQty) * 100) / 100)
             } else if (newQty > 0) {
                 newCurrentValue = newInvested
             }
@@ -236,7 +239,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
                 quantity: newQty,
                 invested_amount: newInvested,
                 current_value: newCurrentValue
-            }).eq('id', investment.id).eq('user_id', user.id)
+            }).eq('id', investment.id)
 
             fetchData()
             return
@@ -244,47 +247,130 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
         }
       }
 
+      // 3. CASO ENTRATA (Distribuzioni automatiche & Tasse P.IVA)
       if (transaction.type === 'income') {
-        const txTime = new Date(transaction.created_at).getTime()
+        const txTime = new Date(transaction.created_at || transaction.date).getTime()
         const timeStart = new Date(txTime - 5000).toISOString()
         const timeEnd = new Date(txTime + 5000).toISOString()
-        const { data: children } = await supabase.from('transactions').select('*').eq('user_id', user.id).eq('type', 'transfer').ilike('description', 'Distribuzione automatica%').gte('created_at', timeStart).lte('created_at', timeEnd)
-        if (children) {
+
+        // A. Rollback Distribuzioni Automatiche (Risparmi)
+        const { data: children } = await supabase
+          .from('transactions')
+          .select('*')
+          .eq('user_id', user.id)
+          .eq('type', 'transfer')
+          .ilike('description', 'Distribuzione automatica%')
+          .gte('created_at', timeStart)
+          .lte('created_at', timeEnd)
+
+        if (children && children.length > 0) {
           for (const child of children) {
             if (child.bucket_id) {
               const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', child.bucket_id).single()
               if (bucket) {
-                const decurtato = Number((Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount))).toFixed(2))
-                await supabase.from('buckets').update({ current_balance: decurtato }).eq('id', child.bucket_id).eq('user_id', user.id)
-              }
-            }
-            await supabase.from('transactions').delete().eq('id', child.id).eq('user_id', user.id)
-          }
-        }
-        const { data: taxChildren } = await supabase.from('transactions').select('*').eq('user_id', user.id).eq('type', 'transfer').ilike('description', 'Accantonamento % (Fattura)').gte('created_at', timeStart).lte('created_at', timeEnd)
-        if (taxChildren) {
-          for (const child of taxChildren) {
-            if (child.bucket_id) {
-              const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', child.bucket_id).single()
-              if (bucket) {
-                const newBalance = Number((Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount))).toFixed(2))
+                const newBalance = roundCurrency(Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount)))
                 await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', child.bucket_id).eq('user_id', user.id)
               }
             }
             await supabase.from('transactions').delete().eq('id', child.id).eq('user_id', user.id)
           }
         }
-      } else if ((transaction.type === 'expense' || transaction.type === 'transfer') && transaction.bucket_id) {
-        const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', transaction.bucket_id).single()
-        if (bucket) {
-            const returnedBal = Number(((bucket.current_balance || 0) + Math.abs(transaction.amount)).toFixed(2))
-            await supabase.from('buckets').update({ current_balance: returnedBal }).eq('id', transaction.bucket_id).eq('user_id', user.id)
+
+        // B. Rollback Accantonamenti Tasse (P.IVA)
+        const { data: taxChildren } = await supabase
+          .from('transactions')
+          .select('*')
+          .eq('user_id', user.id)
+          .eq('type', 'transfer')
+          .ilike('description', 'Accantonamento % (Fattura)')
+          .gte('created_at', timeStart)
+          .lte('created_at', timeEnd)
+
+        if (taxChildren && taxChildren.length > 0) {
+          for (const child of taxChildren) {
+            if (child.bucket_id) {
+              const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', child.bucket_id).single()
+              if (bucket) {
+                const newBalance = roundCurrency(Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount)))
+                await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', child.bucket_id).eq('user_id', user.id)
+              }
+            }
+            await supabase.from('transactions').delete().eq('id', child.id).eq('user_id', user.id)
+          }
         }
       }
 
-      await supabase.from('transactions').delete().eq('id', transaction.id).eq('user_id', user.id)
+      // 4. CASO USCITA/TRANSFER (Da e Verso BUCKET: Restituzione o Rimozione fondi)
+      else if ((transaction.type === 'expense' || transaction.type === 'transfer') && transaction.bucket_id) {
+
+        // A. Rollback Moti Fratelli (Giroconto)
+        if (transaction.type === 'transfer') {
+          const txTime = new Date(transaction.created_at || transaction.date).getTime()
+          const timeStart = new Date(txTime - 2000).toISOString()
+          const timeEnd = new Date(txTime + 2000).toISOString()
+
+          const { data: siblings } = await supabase
+            .from('transactions')
+            .select('*')
+            .eq('user_id', user.id)
+            .eq('type', 'transfer')
+            .gte('created_at', timeStart)
+            .lte('created_at', timeEnd)
+            .neq('id', transaction.id)
+
+          if (siblings && siblings.length > 0) {
+            for (const sib of siblings) {
+              if (sib.bucket_id) {
+                const { data: sibB } = await supabase.from('buckets').select('current_balance').eq('id', sib.bucket_id).eq('user_id', user.id).single()
+                if (sibB) {
+                  const nBalance = roundCurrency((sibB.current_balance || 0) + (sib.amount < 0 ? -Math.abs(sib.amount) : Math.abs(sib.amount)))
+                  await supabase.from('buckets').update({ current_balance: Math.max(0, nBalance) }).eq('id', sib.bucket_id).eq('user_id', user.id)
+                }
+              }
+              await supabase.from('transactions').delete().eq('id', sib.id).eq('user_id', user.id)
+            }
+          }
+        }
+
+        // B. Rollback Transazione Principale
+        const { data: bucket } = await supabase
+          .from('buckets')
+          .select('current_balance')
+          .eq('id', transaction.bucket_id)
+          .eq('user_id', user.id)
+          .single()
+
+        if (bucket) {
+          const amountAbs = Math.abs(transaction.amount)
+          let newBalance = bucket.current_balance || 0
+
+          if (transaction.type === 'expense') {
+            newBalance += amountAbs
+          } else if (transaction.type === 'transfer') {
+            if (transaction.amount < 0) {
+              newBalance -= amountAbs
+            } else {
+              newBalance += amountAbs
+            }
+          }
+
+          await supabase
+            .from('buckets')
+            .update({ current_balance: Math.max(0, roundCurrency(newBalance)) })
+            .eq('id', transaction.bucket_id)
+            .eq('user_id', user.id)
+        }
+      }
+
+      // Elimina transazione principale
+      const { error: mainError } = await supabase.from('transactions').delete().eq('id', transaction.id).eq('user_id', user.id)
+      if (mainError) throw mainError
+
       fetchData()
-    } catch (error) { console.error(error); alert('Errore durante l\'eliminazione') }
+    } catch (error: any) {
+      console.error('Error deleting transaction:', error)
+      toast.error('Errore durante l\'eliminazione')
+    }
   }
 
   function getCategoryName(id: string) { return categories.find(c => c.id === id)?.name || 'Sconosciuta' }
@@ -319,7 +405,7 @@ export default function Dashboard({ primaryColor, profileUpdated, onOpenSettings
 
   return (
     <div className="min-h-screen bg-gray-50 pb-24">
-      <div className="bg-white sticky top-0 z-20 border-b border-gray-100 px-4 py-4 flex items-center justify-between shadow-sm">
+      <div className="bg-white sticky top-0 z-20 border-b border-gray-100 px-4 py-4 flex items-center justify-between shadow-sm pt-safe">
         <div>
           <p className="text-xs text-gray-400 font-medium mb-0.5">Bentornato,</p>
           <h1 className="text-xl font-bold text-gray-900 leading-none">{displayName}</h1>

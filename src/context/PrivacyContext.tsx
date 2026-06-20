@@ -1,11 +1,13 @@
 import { createContext, useContext, useState, type ReactNode } from 'react';
+import { formatCurrency } from '../lib/utils';
 
 interface PrivacyContextType {
   isPrivacyEnabled: boolean;
   togglePrivacy: () => void;
+  hide: (value: number | string, isCurrency?: boolean) => string;
 }
 
-const PrivacyContext = createContext<PrivacyContextType | undefined>(undefined);
+export const PrivacyContext = createContext<PrivacyContextType | undefined>(undefined);
 
 export function PrivacyProvider({ children }: { children: ReactNode }) {
   // Inizializza leggendo dal localStorage per ricordare la scelta dell'utente
@@ -22,8 +24,14 @@ export function PrivacyProvider({ children }: { children: ReactNode }) {
     });
   };
 
+  const hide = (value: number | string, isCurrency = true) => {
+    if (isPrivacyEnabled) return '****'
+    if (typeof value === 'number' && isCurrency) return formatCurrency(value)
+    return String(value)
+  }
+
   return (
-    <PrivacyContext.Provider value={{ isPrivacyEnabled, togglePrivacy }}>
+    <PrivacyContext.Provider value={{ isPrivacyEnabled, togglePrivacy, hide }}>
       {children}
     </PrivacyContext.Provider>
   );

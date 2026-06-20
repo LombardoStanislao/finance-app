@@ -1,8 +1,11 @@
 import { useState, useEffect, useMemo } from 'react'
 import { ArrowLeft, Plus, Trash2, X, Target, PiggyBank, PenLine, Settings, CheckCircle2, AlertTriangle, ArrowUpDown, Lock, Briefcase, GripVertical } from 'lucide-react'
+import toast from 'react-hot-toast'
 import confetti from 'canvas-confetti'
 import { supabase, type Bucket } from '../lib/supabase'
-import { formatCurrency, cn } from '../lib/utils'
+import { formatCurrency, cn, roundCurrency } from '../lib/utils'
+import { useAuth } from '../context/AuthContext'
+
 
 interface BucketsPageProps {
   onBack: () => void
@@ -10,12 +13,19 @@ interface BucketsPageProps {
   primaryColor: string
 }
 
-type SortOption = 'default' | 'name' | 'progress-desc' | 'progress-asc'
+type SortOption = 'default' | 'name' | 'progress-desc' | 'progress-asc' | 'balance-desc' | 'balance-asc'
 
 export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: BucketsPageProps) {
+  const { user } = useAuth()
   const [buckets, setBuckets] = useState<Bucket[]>([])
   const [loading, setLoading] = useState(true)
-  const [sortBy, setSortBy] = useState<SortOption>('default')
+  const [sortBy, setSortBy] = useState<SortOption>(() => {
+    return (localStorage.getItem('bucketsSortBy') as SortOption) || 'default'
+  })
+
+  useEffect(() => {
+    localStorage.setItem('bucketsSortBy', sortBy)
+  }, [sortBy])
   const [isSortMenuOpen, setIsSortMenuOpen] = useState(false)
   
   // P.IVA State
@@ -41,14 +51,15 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
   const [isAddFormOpen, setIsAddFormOpen] = useState(false)
 
   useEffect(() => {
-    loadProfileAndBuckets()
-  }, [])
+    if (user) {
+      loadProfileAndBuckets()
+    }
+  }, [user])
 
   async function loadProfileAndBuckets() {
+    if (!user) return
     try {
       setLoading(true)
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
 
       // 1. Carica Profilo
       const { data: profile } = await supabase
@@ -151,6 +162,12 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
             const progB = getProgress(b)
             return sortBy === 'progress-desc' ? progB - progA : progA - progB
         })
+    } else if (sortBy === 'balance-desc' || sortBy === 'balance-asc') {
+        sorted.sort((a, b) => {
+            const balA = a.current_balance || 0
+            const balB = b.current_balance || 0
+            return sortBy === 'balance-desc' ? balB - balA : balA - balB
+        })
     }
 
     const completed: Bucket[] = []
@@ -181,28 +198,26 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
   async function handleAddBucket(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
+    if (!user) return
     
     const newPercentage = newBucketDistribution ? parseFloat(newBucketDistribution) : 0
     
     if (totalDistributionPercentage + newPercentage > 100.001) {
-        setError(`Errore: Stai superando il 100% (Totale attuale: ${totalDistributionPercentage.toFixed(2)}%)`)
+        setError(`Errore: Stai superando il 100% (Totale attuale: ${roundCurrency(totalDistributionPercentage)}%)`)
         return
     }
 
     setBucketLoading(true)
 
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
-
       const { error } = await supabase
         .from('buckets')
         .insert({
           user_id: user.id,
           name: newBucketName,
-          distribution_percentage: newBucketDistribution ? Number(parseFloat(newBucketDistribution).toFixed(2)) : 0,
-          current_balance: newBucketBalance ? Number(parseFloat(newBucketBalance).toFixed(2)) : 0,
-          target_amount: newBucketTarget ? Number(parseFloat(newBucketTarget).toFixed(2)) : null,
+          distribution_percentage: newBucketDistribution ? roundCurrency(parseFloat(newBucketDistribution)) : 0,
+          current_balance: newBucketBalance ? roundCurrency(parseFloat(newBucketBalance)) : 0,
+          target_amount: newBucketTarget ? roundCurrency(parseFloat(newBucketTarget)) : null,
         })
 
       if (error) throw error
@@ -242,7 +257,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
         .reduce((sum, b) => sum + (b.distribution_percentage || 0), 0)
 
     if (otherBucketsTotal + newPercentage > 100.001) {
-        setError(`Errore: Il totale supererebbe il 100% (Disponibile: ${(100 - otherBucketsTotal).toFixed(2)}%)`)
+        setError(`Errore: Il totale supererebbe il 100% (Disponibile: ${roundCurrency(100 - otherBucketsTotal)}%)`)
         return
     }
 
@@ -253,9 +268,9 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
         .from('buckets')
         .update({
           name: finalName,
-          distribution_percentage: Number(finalDistribution.toFixed(2)),
-          current_balance: editBucketBalance ? Number(parseFloat(editBucketBalance).toFixed(2)) : 0,
-          target_amount: editBucketTarget ? Number(parseFloat(editBucketTarget).toFixed(2)) : null,
+          distribution_percentage: roundCurrency(finalDistribution),
+          current_balance: editBucketBalance ? roundCurrency(parseFloat(editBucketBalance)) : 0,
+          target_amount: editBucketTarget ? roundCurrency(parseFloat(editBucketTarget)) : null,
         })
         .eq('id', editingBucket.id)
         .eq('user_id', user.id)
@@ -277,19 +292,18 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
     
     // Protezione extra per i bucket fiscali
     if (isProTax && (bucketToDelete?.name === 'Aliquota INPS' || bucketToDelete?.name === 'Aliquota Imposta Sostitutiva')) {
-        alert('Questo salvadanaio è gestito automaticamente dal profilo P.IVA e non può essere eliminato manualmente.')
+        toast.error('Questo salvadanaio è gestito automaticamente dal profilo P.IVA e non può essere eliminato manualmente.', { duration: 6000 })
         return
     }
 
     if (bucketToDelete && (bucketToDelete.current_balance || 0) > 0) {
-      alert('Impossibile eliminare: Il salvadanaio contiene ancora del denaro. Per favore svuotalo prima.')
+      toast.error('Impossibile eliminare: Il salvadanaio contiene ancora del denaro. Per favore svuotalo prima.', { duration: 5000 })
       return 
     }
 
     if (!confirm('Sei sicuro di voler eliminare questo salvadanaio?')) return
 
     try {
-      const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
 
       // PROTEZIONE NET-WORTH: Segniamo 'is_from_bucket' a true prima di sganciare il vincolo
@@ -300,7 +314,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
       loadProfileAndBuckets()
     } catch (error) {
       console.error('Error deleting bucket:', error)
-      alert('Impossibile eliminare il salvadanaio. Riprova.')
+      toast.error('Impossibile eliminare il salvadanaio. Riprova.')
     }
   }
 
@@ -365,9 +379,9 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                                 setEditingBucket(bucket)
                                 setEditBucketName(bucket.name)
                                 setEditBucketDistribution((bucket.distribution_percentage || 0).toString())
-                                // QUI E' STATA APPLICATA LA MODIFICA: .toFixed(2)
-                                setEditBucketBalance((bucket.current_balance || 0).toFixed(2)) 
-                                setEditBucketTarget((bucket.target_amount || 0).toFixed(2))
+                                // QUI E' STATA APPLICATA LA MODIFICA: roundCurrency
+                                setEditBucketBalance(String(roundCurrency(bucket.current_balance || 0))) 
+                                setEditBucketTarget(String(roundCurrency(bucket.target_amount || 0)))
                                 setError(null)
                             }}
                             className="p-2 text-gray-300 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
@@ -406,7 +420,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
   return (
     <div className="min-h-screen bg-gray-50 pb-24">
       {/* HEADER STICKY */}
-      <div className="bg-white sticky top-0 z-20 border-b border-gray-100 shadow-sm px-4 py-4 flex items-center justify-between">
+      <div className="bg-white sticky top-0 z-20 border-b border-gray-100 shadow-sm px-4 py-4 flex items-center justify-between pt-safe">
         <div className="flex items-center gap-3">
             <button onClick={onBack} className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors">
                <ArrowLeft className="w-6 h-6 text-gray-700" />
@@ -429,10 +443,12 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
                         <div className="fixed inset-0 z-30" onClick={() => setIsSortMenuOpen(false)} />
                         <div className="absolute right-0 mt-2 w-48 bg-white rounded-xl shadow-xl border border-gray-100 z-40 overflow-hidden animate-in fade-in slide-in-from-top-2">
                             <div className="p-1">
-                                <button onClick={() => { setSortBy('default'); setIsSortMenuOpen(false) }} className="w-full text-left px-3 py-2 text-sm rounded-lg font-medium hover:bg-gray-50">Standard</button>
-                                <button onClick={() => { setSortBy('name'); setIsSortMenuOpen(false) }} className="w-full text-left px-3 py-2 text-sm rounded-lg font-medium hover:bg-gray-50">Alfabetico</button>
-                                <button onClick={() => { setSortBy('progress-desc'); setIsSortMenuOpen(false) }} className="w-full text-left px-3 py-2 text-sm rounded-lg font-medium hover:bg-gray-50">Più vicini</button>
-                                <button onClick={() => { setSortBy('progress-asc'); setIsSortMenuOpen(false) }} className="w-full text-left px-3 py-2 text-sm rounded-lg font-medium hover:bg-gray-50">Più lontani</button>
+                                <button onClick={() => { setSortBy('default'); setIsSortMenuOpen(false) }} className={cn("w-full text-left px-3 py-2 text-sm rounded-lg font-medium hover:bg-gray-50", sortBy === 'default' && "bg-blue-50 text-blue-600")}>Standard</button>
+                                <button onClick={() => { setSortBy('name'); setIsSortMenuOpen(false) }} className={cn("w-full text-left px-3 py-2 text-sm rounded-lg font-medium hover:bg-gray-50", sortBy === 'name' && "bg-blue-50 text-blue-600")}>Alfabetico</button>
+                                <button onClick={() => { setSortBy('progress-desc'); setIsSortMenuOpen(false) }} className={cn("w-full text-left px-3 py-2 text-sm rounded-lg font-medium hover:bg-gray-50", sortBy === 'progress-desc' && "bg-blue-50 text-blue-600")}>Più vicini al target</button>
+                                <button onClick={() => { setSortBy('progress-asc'); setIsSortMenuOpen(false) }} className={cn("w-full text-left px-3 py-2 text-sm rounded-lg font-medium hover:bg-gray-50", sortBy === 'progress-asc' && "bg-blue-50 text-blue-600")}>Più lontani al target</button>
+                                <button onClick={() => { setSortBy('balance-desc'); setIsSortMenuOpen(false) }} className={cn("w-full text-left px-3 py-2 text-sm rounded-lg font-medium hover:bg-gray-50", sortBy === 'balance-desc' && "bg-blue-50 text-blue-600")}>Saldo (Maggiore)</button>
+                                <button onClick={() => { setSortBy('balance-asc'); setIsSortMenuOpen(false) }} className={cn("w-full text-left px-3 py-2 text-sm rounded-lg font-medium hover:bg-gray-50", sortBy === 'balance-asc' && "bg-blue-50 text-blue-600")}>Saldo (Minore)</button>
                             </div>
                         </div>
                     </>
@@ -465,7 +481,7 @@ export default function BucketsPage({ onBack, onOpenSettings, primaryColor }: Bu
             </p>
             <p className={cn("text-xs mt-1 font-medium", totalDistributionPercentage > 100 ? "text-red-500 font-bold" : "text-gray-400")}>
               {100 - totalDistributionPercentage >= 0 
-                ? `${(100 - totalDistributionPercentage).toFixed(2)}% rimane nella Liquidità`
+                ? `${roundCurrency(100 - totalDistributionPercentage)}% rimane nella Liquidità`
                 : 'Attenzione: Hai superato il 100%!'}
             </p>
           </div>

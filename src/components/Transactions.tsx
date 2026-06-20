@@ -1,7 +1,11 @@
 import React, { useState, useEffect } from 'react'
 import { ArrowLeft, ArrowRightLeft, Calendar, Search, Trash2, TrendingDown, TrendingUp, X, Settings, PieChart } from 'lucide-react'
-import { supabase, type Transaction, type Category } from '../lib/supabase'
-import { formatCurrency, formatDate, cn } from '../lib/utils'
+import toast from 'react-hot-toast'
+import { supabase, type Transaction } from '../lib/supabase'
+import { useAuth } from '../context/AuthContext'
+
+import { useCategoryTree } from '../hooks/useCategoryTree'
+import { formatCurrency, formatDate, cn, roundCurrency } from '../lib/utils'
 import TransactionForm from './TransactionForm'
 
 interface TransactionsProps {
@@ -9,14 +13,11 @@ interface TransactionsProps {
   onOpenSettings: () => void
   primaryColor: string
 }
-interface CategoryWithChildren extends Category {
-    children?: CategoryWithChildren[]
-}
 
 export default function Transactions({ onBack, onOpenSettings, primaryColor }: TransactionsProps) {
+  const { user } = useAuth()
+  const { flatCategories, categoryTree } = useCategoryTree()
   const [transactions, setTransactions] = useState<Transaction[]>([])
-  const [flatCategories, setFlatCategories] = useState<Category[]>([])
-  const [categoryTree, setCategoryTree] = useState<CategoryWithChildren[]>([])
   const [loading, setLoading] = useState(true)
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null)
   const [isTransactionFormOpen, setIsTransactionFormOpen] = useState(false)
@@ -31,57 +32,19 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
   const [dateTo, setDateTo] = useState<string>('')
 
   useEffect(() => {
-    loadCategories()
-  }, [])
-
-  useEffect(() => {
-    loadTransactions()
+    if (user) loadTransactions()
     // Reset category filter if type changes and category doesn't match
     if (filterCategory !== 'all') {
       const selectedCategory = flatCategories.find(c => c.id === filterCategory)
-      if (selectedCategory && filterType !== 'all' && selectedCategory.type !== filterType) {
+      if (selectedCategory && selectedCategory.type !== filterType) {
         setFilterCategory('all')
       }
     }
-  }, [filterType, filterCategory, filterSearch, dateFrom, dateTo])
-
-  async function loadCategories() {
-    try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
-
-      const { data } = await supabase
-        .from('categories')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('name')
-
-      const flat = data || []
-      setFlatCategories(flat)
-
-      const categoryMap = new Map<string, CategoryWithChildren>()
-      const rootCategories: CategoryWithChildren[] = []
-
-      flat.forEach(cat => categoryMap.set(cat.id, { ...cat, children: [] }))
-      flat.forEach(cat => {
-          if (cat.parent_id) {
-              const parent = categoryMap.get(cat.parent_id)
-              if (parent) parent.children?.push(categoryMap.get(cat.id)!)
-          } else {
-              rootCategories.push(categoryMap.get(cat.id)!)
-          }
-      })
-      
-      setCategoryTree(rootCategories)
-    } catch (error) {
-      console.error('Error loading categories:', error)
-    }
-  }
+  }, [user, filterType, filterCategory, filterSearch, dateFrom, dateTo, flatCategories])
 
   async function loadTransactions() {
     try {
       setLoading(true)
-      const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
 
       let query = supabase
@@ -146,7 +109,7 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
         .single()
 
       if (bucketCheck && ['Aliquota INPS', 'Aliquota Imposta Sostitutiva'].includes(bucketCheck.name)) {
-        alert("🚫 AZIONE BLOCCATA\n\nNon puoi eliminare manualmente un singolo accantonamento fiscale.\n\nPer annullare questa operazione, devi eliminare la transazione di Entrata (Fattura) originale che l'ha generato.")
+        toast.error("Non puoi eliminare manualmente un singolo accantonamento fiscale.\n\nPer annullare questa operazione, devi eliminare la transazione di Entrata (Fattura) originale che l'ha generato.", { duration: 6000 })
         return
       }
     }
@@ -154,7 +117,6 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
     if (!window.confirm('Eliminare questa transazione? L\'operazione annullerà anche eventuali movimenti collegati.')) return
 
     try {
-      const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
 
       // 2. GESTIONE INVESTIMENTO (Atomic Group Delete)
@@ -233,7 +195,7 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
             if (child.bucket_id) {
               const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', child.bucket_id).single()
               if (bucket) {
-                const newBalance = Number((Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount))).toFixed(2))
+                const newBalance = roundCurrency(Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount)))
                 await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', child.bucket_id).eq('user_id', user.id)
               }
             }
@@ -256,7 +218,7 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
             if (child.bucket_id) {
               const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', child.bucket_id).single()
               if (bucket) {
-                const newBalance = Number((Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount))).toFixed(2))
+                const newBalance = roundCurrency(Math.max(0, (bucket.current_balance || 0) - Math.abs(child.amount)))
                 await supabase.from('buckets').update({ current_balance: newBalance }).eq('id', child.bucket_id).eq('user_id', user.id)
               }
             }
@@ -288,7 +250,7 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
               if (sib.bucket_id) {
                 const { data: sibB } = await supabase.from('buckets').select('current_balance').eq('id', sib.bucket_id).eq('user_id', user.id).single()
                 if (sibB) {
-                  const nBalance = Number(((sibB.current_balance || 0) + (sib.amount < 0 ? -Math.abs(sib.amount) : Math.abs(sib.amount))).toFixed(2))
+                  const nBalance = roundCurrency((sibB.current_balance || 0) + (sib.amount < 0 ? -Math.abs(sib.amount) : Math.abs(sib.amount)))
                   await supabase.from('buckets').update({ current_balance: Math.max(0, nBalance) }).eq('id', sib.bucket_id).eq('user_id', user.id)
                 }
               }
@@ -321,7 +283,7 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
 
           await supabase
             .from('buckets')
-            .update({ current_balance: Math.max(0, Number(newBalance.toFixed(2))) })
+            .update({ current_balance: Math.max(0, roundCurrency(newBalance)) })
             .eq('id', transaction.bucket_id)
             .eq('user_id', user.id)
         }
@@ -334,7 +296,7 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
       loadTransactions()
     } catch (error: any) {
       console.error('Error deleting transaction:', error)
-      alert('Errore durante l\'eliminazione')
+      toast.error('Errore durante l\'eliminazione')
     }
   }
 
@@ -346,7 +308,7 @@ export default function Transactions({ onBack, onOpenSettings, primaryColor }: T
   return (
     <div className="min-h-screen bg-gray-50 pb-24">
       {/* HEADER STICKY */}
-      <div className="bg-white sticky top-0 z-20 border-b border-gray-100 shadow-sm">
+      <div className="bg-white sticky top-0 z-20 border-b border-gray-100 shadow-sm pt-safe">
         <div className="max-w-md mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <button

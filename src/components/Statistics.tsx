@@ -3,6 +3,8 @@ import { ArrowLeft, TrendingUp, Wallet, Settings, Activity, ChevronDown, Calenda
 import { PieChart, Pie, Cell, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, BarChart, Bar } from 'recharts'
 import { supabase, type Category, type Transaction } from '../lib/supabase'
 import { formatCurrency, cn, formatDate, calculateLiquidity } from '../lib/utils'
+import { useAuth } from '../context/AuthContext'
+
 
 interface StatisticsProps {
   onBack: () => void
@@ -92,6 +94,8 @@ const renderCustomizedLabel = (props: any) => {
 
 export default function Statistics({ onBack, onOpenSettings, primaryColor }: StatisticsProps) {
   const [loading, setLoading] = useState(true)
+  const { user } = useAuth()
+
 
   // Dati Grezzi
   const [allTransactions, setAllTransactions] = useState<Transaction[]>([])
@@ -122,29 +126,30 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
   const [activeDrillCategory, setActiveDrillCategory] = useState<CategoryData | null>(null)
   const [activeSubCategory, setActiveSubCategory] = useState<string | null>(null)
 
-  // Rimuovi il pannello filtri vecchio ingombrante, usiamo UI pulita
-
   // Init
   useEffect(() => {
-    loadInitialData()
-    loadInvestmentData()
-  }, [])
+    if (user) {
+      loadInitialData()
+      loadInvestmentData()
+    }
+  }, [user])
 
   // Reload Transazioni
   useEffect(() => {
-    if (allCategories.length > 0) {
+    if (allCategories.length > 0 && user) {
       loadTransactionsInRange()
     }
-  }, [pieRange, selectedMonth, selectedYear, customStart, customEnd, allCategories])
+  }, [pieRange, selectedMonth, selectedYear, customStart, customEnd, allCategories, user])
 
   // Reload Net Worth
   useEffect(() => {
-    loadNetWorthData()
-  }, [lineRange])
+    if (user) {
+      loadNetWorthData()
+    }
+  }, [lineRange, user])
 
   async function loadInitialData() {
     try {
-      const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
 
       const { data: profile } = await supabase.from('profiles').select('is_pro_tax').eq('id', user.id).maybeSingle()
@@ -161,7 +166,6 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
 
   async function loadInvestmentData() {
     try {
-      const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
       const { data: investments } = await supabase.from('investments').select('type, current_value').eq('user_id', user.id)
 
@@ -262,12 +266,10 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
       const { data: investments } = await supabase.from('investments').select('current_value').eq('user_id', user.id)
       const investmentsTotal = investments?.reduce((sum, inv) => sum + (inv.current_value || 0), 0) || 0
 
-      const { data: buckets } = await supabase.from('buckets').select('current_balance').eq('user_id', user.id)
-      const bucketsTotal = buckets?.reduce((sum, bucket) => sum + (bucket.current_balance || 0), 0) || 0
-
       const { data: rawForLiq } = await supabase.from('transactions').select('*').eq('user_id', user.id)
       const currentLiquidity = calculateLiquidity(rawForLiq || [])
-      const realTargetNetWorthToday = currentLiquidity + bucketsTotal + investmentsTotal
+      // I buckets (salvadanai) sono liquidità accantonata, NON patrimonio aggiuntivo
+      const realTargetNetWorthToday = currentLiquidity + investmentsTotal
 
       let runningBookValue = 0
       const dailyPoints = new Map<string, { nw: number, inc: number, exp: number }>()
@@ -445,7 +447,7 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
     return (
       <div className="min-h-screen bg-gray-50 pb-24 animate-in slide-in-from-right-10 duration-200 fade-in">
         {/* HEADER DETAIL */}
-        <div className="bg-white sticky top-0 z-10 border-b border-gray-100 px-4 py-4 shadow-sm flex items-center justify-between">
+        <div className="bg-white sticky top-0 z-10 border-b border-gray-100 px-4 py-4 shadow-sm flex items-center justify-between pt-safe">
           <div className="flex items-center gap-3">
             <button onClick={() => {
               if (activeSubCategory) setActiveSubCategory(null)
@@ -528,7 +530,7 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
   return (
     <div className="min-h-screen bg-gray-50 pb-24">
       {/* HEADER & CONTROLLI */}
-      <div className="bg-white/80 backdrop-blur-lg sticky top-0 z-40 border-b border-gray-100/50 px-4 py-4 flex flex-col gap-5 shadow-sm">
+      <div className="bg-white/80 backdrop-blur-lg sticky top-0 z-40 border-b border-gray-100/50 px-4 py-4 flex flex-col gap-5 shadow-sm pt-safe">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <button onClick={onBack} className="p-2.5 -ml-2 bg-gray-50 hover:bg-gray-100 rounded-full transition-colors active:scale-95">
@@ -723,7 +725,7 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
                       stroke="white"
                       strokeWidth={2}
                       isAnimationActive={true}
-                      onClick={(data, index) => setActiveDrillCategory(processedExpenses[index])}
+                      onClick={(_, index) => setActiveDrillCategory(processedExpenses[index])}
                       className="cursor-pointer"
                     >
                       {processedExpenses.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} className="hover:opacity-80 transition-opacity outline-none" />)}
@@ -799,7 +801,7 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
                       stroke="white"
                       strokeWidth={2}
                       isAnimationActive={true}
-                      onClick={(data, index) => setActiveDrillCategory(processedIncome[index])}
+                      onClick={(_, index) => setActiveDrillCategory(processedIncome[index])}
                       className="cursor-pointer"
                     >
                       {processedIncome.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} className="hover:opacity-80 transition-opacity outline-none" />)}
@@ -865,7 +867,6 @@ export default function Statistics({ onBack, onOpenSettings, primaryColor }: Sta
                     labelLine={false}
                     stroke="white"
                     strokeWidth={3}
-                    onClick={(data, index) => setActiveDrillCategory(investmentData[index])}
                     className="cursor-pointer"
                   >
                     {investmentData.map((entry, index) => <Cell key={`cell-inv-${index}`} fill={entry.color} className="hover:opacity-80 transition-opacity outline-none" />)}

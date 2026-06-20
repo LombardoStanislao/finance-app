@@ -1,7 +1,10 @@
 import { useState, useEffect } from 'react'
 import { X, TrendingUp, TrendingDown, ArrowRightLeft, Calendar, AlignLeft, PieChart, PiggyBank, Briefcase, AlertTriangle } from 'lucide-react'
-import { supabase, type Category, type Bucket, type Transaction } from '../lib/supabase'
-import { cn, formatCurrency } from '../lib/utils'
+import toast from 'react-hot-toast'
+import { supabase, type Bucket, type Transaction } from '../lib/supabase'
+import { useAuth } from '../context/AuthContext'
+import { useCategoryTree } from '../hooks/useCategoryTree'
+import { cn, formatCurrency, safeEvaluate } from '../lib/utils'
 
 interface TransactionFormProps {
     isOpen: boolean
@@ -11,9 +14,7 @@ interface TransactionFormProps {
     editingTransaction?: Transaction | null
 }
 
-interface CategoryWithChildren extends Category {
-    children?: CategoryWithChildren[]
-}
+
 
 interface BucketWithTarget extends Bucket {
     target_amount?: number
@@ -28,6 +29,7 @@ interface TaxProfile {
 }
 
 export default function TransactionForm({ isOpen, onClose, onSuccess, primaryColor = 'blue', editingTransaction }: TransactionFormProps) {
+    const { user } = useAuth()
     const [amount, setAmount] = useState('')
     const [categoryId, setCategoryId] = useState('')
     const [date, setDate] = useState(new Date().toISOString().split('T')[0])
@@ -53,7 +55,7 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
     const [hasLinkedChildren, setHasLinkedChildren] = useState(false)
 
     // Dati caricati
-    const [categories, setCategories] = useState<CategoryWithChildren[]>([])
+    const { categoryTree } = useCategoryTree()
     const [buckets, setBuckets] = useState<BucketWithTarget[]>([])
 
     // Stati P.IVA
@@ -65,7 +67,7 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
 
     // Caricamento dati e Setup Edit
     useEffect(() => {
-        if (isOpen) {
+        if (isOpen && user) {
             loadData()
             if (editingTransaction) {
                 setEditingId(editingTransaction.id)
@@ -131,23 +133,7 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
 
     async function loadData() {
         try {
-            const { data: { user } } = await supabase.auth.getUser()
             if (!user) return
-
-            const { data: cats } = await supabase.from('categories').select('*').eq('user_id', user.id).order('name')
-            const categoryMap = new Map<string, CategoryWithChildren>()
-            const rootCategories: CategoryWithChildren[] = []
-
-            cats?.forEach(cat => categoryMap.set(cat.id, { ...cat, children: [] }))
-            cats?.forEach(cat => {
-                if (cat.parent_id) {
-                    const parent = categoryMap.get(cat.parent_id)
-                    if (parent) parent.children?.push(categoryMap.get(cat.id)!)
-                } else {
-                    rootCategories.push(categoryMap.get(cat.id)!)
-                }
-            })
-            setCategories(rootCategories)
 
             const { data: bucks } = await supabase.from('buckets').select('*').eq('user_id', user.id).order('created_at')
             setBuckets(bucks || [])
@@ -189,17 +175,9 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
     }
 
     // Engine Safe Calculator
-    let evaluatedNumber = 0
+    let evaluatedNumber = safeEvaluate(amount)
     let showLiveResult = false
-    try {
-        const sanitized = amount.replace(/[^0-9+\-*/.]/g, '')
-        if (sanitized && /^[0-9+\-*/.]+$/.test(sanitized)) {
-             evaluatedNumber = new Function('return ' + sanitized)() || 0
-             if (!Number.isFinite(evaluatedNumber)) evaluatedNumber = 0
-             evaluatedNumber = Number(evaluatedNumber.toFixed(2)) // <-- FIX FLOATING POINT (es. 0.1+0.2 non fa più 0.30000004)
-        }
-        if (['+', '-', '*', '/'].some(op => amount.includes(op))) showLiveResult = true
-    } catch(e) {}
+    if (['+', '-', '*', '/'].some(op => amount.includes(op))) showLiveResult = true
 
     const handleNumpad = (key: string) => {
         if (key === 'C') return setAmount('')
@@ -235,11 +213,14 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
         return data.id
     }
 
-    async function handleAutoSplitLogic(userId: string, totalAmount: number, transactionDate: string) {
+    function getAutoSplitOperations(totalAmount: number, transactionDate: string) {
         const taxBucketNames = ['Aliquota INPS', 'Aliquota Imposta Sostitutiva']
         const activeBuckets = buckets.filter(b => b.distribution_percentage > 0 && !taxBucketNames.includes(b.name) && (!b.target_amount || b.target_amount === 0 || (b.current_balance || 0) < b.target_amount))
 
-        if (activeBuckets.length === 0) return
+        const inserts: any[] = []
+        const bUpdates: any[] = []
+
+        if (activeBuckets.length === 0) return { inserts, bUpdates }
 
         let remainingToDistribute = totalAmount
 
@@ -253,96 +234,100 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
             share = Math.round((share + Number.EPSILON) * 100) / 100
 
             if (share > 0) {
-                const newBBal = Number(((bucket.current_balance || 0) + share).toFixed(2))
-                await supabase.from('buckets').update({ current_balance: newBBal }).eq('id', bucket.id).eq('user_id', userId)
-                await supabase.from('transactions').insert({ user_id: userId, amount: -Math.abs(share), type: 'transfer', description: `Distribuzione automatica a ${bucket.name}`, date: transactionDate, bucket_id: bucket.id, created_at: new Date().toISOString() })
+                bUpdates.push({ bucket_id: bucket.id, amount_change: share })
+                inserts.push({
+                    amount: -Math.abs(share),
+                    type: 'transfer',
+                    description: `Distribuzione automatica a ${bucket.name}`,
+                    date: transactionDate,
+                    bucket_id: bucket.id
+                })
                 remainingToDistribute -= share
             }
         }
+        return { inserts, bUpdates }
     }
 
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault()
+
+        if (!navigator.onLine) {
+            toast.error('Connessione assente. Non puoi effettuare questa operazione offline.')
+            return
+        }
+
         setLoading(true)
 
         try {
-            const { data: { user } } = await supabase.auth.getUser()
             if (!user) throw new Error('Utente non autenticato')
 
-            let amountVal = 0
-            try {
-                const sanitized = amount.replace(/[^0-9+\-*/.]/g, '')
-                if (sanitized) amountVal = new Function('return ' + sanitized)() || 0
-                if (!Number.isFinite(amountVal)) amountVal = 0
-            } catch(e) { throw new Error("Errore nel calcolo dell'importo") }
-
+            let amountVal = safeEvaluate(amount)
             if (amountVal <= 0) throw new Error("Inserisci un importo valido")
 
             let finalAmount = type === 'expense' ? -Math.abs(amountVal) : Math.abs(amountVal)
+
+            let p_transactions_insert: any[] = []
+            let p_transactions_update: any[] = []
+            let p_bucket_updates: any[] = []
 
             if (type === 'transfer') {
                 if (!transferSource || !transferDestination) throw new Error('Seleziona origine e destinazione')
 
                 if (transferSource === 'liquidity') {
-                    const { data: bucket } = await supabase.from('buckets').select('current_balance').eq('id', transferDestination).single()
-                    const newBBal = Number(((bucket?.current_balance || 0) + amountVal).toFixed(2))
-                    await supabase.from('buckets').update({ current_balance: newBBal }).eq('id', transferDestination).eq('user_id', user.id)
-                    await supabase.from('transactions').insert({ user_id: user.id, amount: -Math.abs(amountVal), type: 'transfer', description: `Trasferimento a ${buckets.find(b => b.id === transferDestination)?.name}`, date: new Date(date).toISOString(), bucket_id: transferDestination })
+                    p_bucket_updates.push({ bucket_id: transferDestination, amount_change: amountVal })
+                    p_transactions_insert.push({
+                        amount: -Math.abs(amountVal),
+                        type: 'transfer',
+                        description: `Trasferimento a ${buckets.find(b => b.id === transferDestination)?.name}`,
+                        date: new Date(date).toISOString(),
+                        bucket_id: transferDestination
+                    })
                 } else {
-                    const { data: sourceBucket } = await supabase.from('buckets').select('current_balance').eq('id', transferSource).single()
+                    const sourceBucket = buckets.find(b => b.id === transferSource)
                     if ((sourceBucket?.current_balance || 0) < amountVal) throw new Error('Saldo insufficiente nel salvadanaio')
-                    const newSBal = Number(((sourceBucket?.current_balance || 0) - amountVal).toFixed(2))
-                    await supabase.from('buckets').update({ current_balance: newSBal }).eq('id', transferSource).eq('user_id', user.id)
+                    
+                    p_bucket_updates.push({ bucket_id: transferSource, amount_change: -amountVal })
 
                     if (transferDestination === 'liquidity') {
-                        await supabase.from('transactions').insert({ user_id: user.id, amount: Math.abs(amountVal), type: 'transfer', description: `Prelievo da ${buckets.find(b => b.id === transferSource)?.name}`, date: new Date(date).toISOString(), bucket_id: transferSource })
+                        p_transactions_insert.push({
+                            amount: Math.abs(amountVal),
+                            type: 'transfer',
+                            description: `Prelievo da ${buckets.find(b => b.id === transferSource)?.name}`,
+                            date: new Date(date).toISOString(),
+                            bucket_id: transferSource
+                        })
                     } else {
-                        const { data: destBucket } = await supabase.from('buckets').select('current_balance').eq('id', transferDestination).single()
-                        const newDBal = Number(((destBucket?.current_balance || 0) + amountVal).toFixed(2))
-                        await supabase.from('buckets').update({ current_balance: newDBal }).eq('id', transferDestination).eq('user_id', user.id)
-
-                        // NEW: INSERT BOTH TRANSACTIONS FOR BUCKET-TO-BUCKET
-                        const nowStr = new Date().toISOString()
+                        p_bucket_updates.push({ bucket_id: transferDestination, amount_change: amountVal })
+                        
                         const txDate = new Date(date).toISOString()
-
-                        await supabase.from('transactions').insert([
-                            { user_id: user.id, amount: Math.abs(amountVal), type: 'transfer', description: `Giroconto verso ${buckets.find(b => b.id === transferDestination)?.name}`, date: txDate, bucket_id: transferSource, created_at: nowStr },
-                            { user_id: user.id, amount: -Math.abs(amountVal), type: 'transfer', description: `Giroconto da ${buckets.find(b => b.id === transferSource)?.name}`, date: txDate, bucket_id: transferDestination, created_at: nowStr }
-                        ])
+                        p_transactions_insert.push(
+                            { amount: Math.abs(amountVal), type: 'transfer', description: `Giroconto verso ${buckets.find(b => b.id === transferDestination)?.name}`, date: txDate, bucket_id: transferSource },
+                            { amount: -Math.abs(amountVal), type: 'transfer', description: `Giroconto da ${buckets.find(b => b.id === transferSource)?.name}`, date: txDate, bucket_id: transferDestination }
+                        )
                     }
                 }
             } else {
                 if (editingId && editingTransaction) {
                     // Edit existing with proper Revert
-
-                    // 1. REVERT old bucket if it was an expense OR income
                     if ((editingTransaction.type === 'expense' || editingTransaction.type === 'income') && editingTransaction.bucket_id) {
-                        const { data: oldBucket } = await supabase.from('buckets').select('current_balance').eq('id', editingTransaction.bucket_id).single()
-                        if (oldBucket) {
-                            const revertAmount = editingTransaction.type === 'expense' ? Math.abs(editingTransaction.amount) : -Math.abs(editingTransaction.amount)
-                            const oldNewBal = Number((Math.max(0, (oldBucket.current_balance || 0) + revertAmount)).toFixed(2))
-                            await supabase.from('buckets').update({ current_balance: oldNewBal }).eq('id', editingTransaction.bucket_id).eq('user_id', user.id)
-                        }
+                        const revertAmount = editingTransaction.type === 'expense' ? Math.abs(editingTransaction.amount) : -Math.abs(editingTransaction.amount)
+                        p_bucket_updates.push({ bucket_id: editingTransaction.bucket_id, amount_change: revertAmount })
                     }
 
-                    // 2. APPLY new bucket if it is an expense OR income
                     if ((type === 'expense' || type === 'income') && bucketId) {
-                        const { data: newBucket } = await supabase.from('buckets').select('current_balance').eq('id', bucketId).single()
-                        if (newBucket) {
-                            const applyAmount = type === 'expense' ? -Math.abs(amountVal) : Math.abs(amountVal)
-                            const appliedBal = Number((Math.max(0, (newBucket.current_balance || 0) + applyAmount)).toFixed(2))
-                            await supabase.from('buckets').update({ current_balance: appliedBal }).eq('id', bucketId).eq('user_id', user.id)
-                        }
+                        const applyAmount = type === 'expense' ? -Math.abs(amountVal) : Math.abs(amountVal)
+                        p_bucket_updates.push({ bucket_id: bucketId, amount_change: applyAmount })
                     }
 
-                    await supabase.from('transactions').update({
+                    p_transactions_update.push({
+                        id: editingId,
                         amount: finalAmount,
                         category_id: categoryId || null,
                         date: new Date(date).toISOString(),
                         description,
                         type,
                         bucket_id: bucketId || null
-                    }).eq('id', editingId)
+                    })
                 } else {
                     // New Transaction
                     const localD = new Date()
@@ -362,24 +347,18 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                             next_date: date,
                             end_date: endDate || null
                         })
+                        onSuccess()
+                        onClose()
+                        return // Early return for future recurring logic
                     } else {
                         // Flusso Attuale/Passato
                         if (type === 'expense' && bucketId) {
-                            const { data: buck } = await supabase.from('buckets').select('current_balance').eq('id', bucketId).single()
-                            if (buck) {
-                                const bBal = Number((Math.max(0, (buck.current_balance || 0) - amountVal)).toFixed(2))
-                                await supabase.from('buckets').update({ current_balance: bBal }).eq('id', bucketId).eq('user_id', user.id)
-                            }
+                            p_bucket_updates.push({ bucket_id: bucketId, amount_change: -amountVal })
                         } else if (type === 'income' && bucketId) {
-                            const { data: buck } = await supabase.from('buckets').select('current_balance').eq('id', bucketId).single()
-                            if (buck) {
-                                const bBal = Number(((buck.current_balance || 0) + amountVal).toFixed(2))
-                                await supabase.from('buckets').update({ current_balance: bBal }).eq('id', bucketId).eq('user_id', user.id)
-                            }
+                            p_bucket_updates.push({ bucket_id: bucketId, amount_change: amountVal })
                         }
 
-                        const { data: newTx, error: txError } = await supabase.from('transactions').insert({
-                            user_id: user.id,
+                        p_transactions_insert.push({
                             amount: finalAmount,
                             category_id: categoryId || null,
                             date: new Date(date).toISOString(),
@@ -388,9 +367,7 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                             bucket_id: bucketId || null,
                             is_work_related: false,
                             is_recurring: isRecurring
-                        }).select().single()
-
-                        if (txError) throw txError
+                        })
 
                         if (isRecurring) {
                             const [y, m, d] = date.split('-').map(Number)
@@ -420,30 +397,39 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                         if (type === 'income' && isInvoice && taxCalculations && autoSaveTaxes) {
                             const inpsBucketId = await getOrCreateBucket(user.id, 'Aliquota INPS')
                             const taxBucketId = await getOrCreateBucket(user.id, 'Aliquota Imposta Sostitutiva')
-                            const { data: inpsB } = await supabase.from('buckets').select('current_balance').eq('id', inpsBucketId).single()
-                            const { data: taxB } = await supabase.from('buckets').select('current_balance').eq('id', taxBucketId).single()
+                            
+                            p_bucket_updates.push({ bucket_id: inpsBucketId, amount_change: taxCalculations.inps })
+                            p_bucket_updates.push({ bucket_id: taxBucketId, amount_change: taxCalculations.tax })
 
-                            const nInps = Number(((inpsB?.current_balance || 0) + taxCalculations.inps).toFixed(2))
-                            await supabase.from('buckets').update({ current_balance: nInps }).eq('id', inpsBucketId).eq('user_id', user.id)
-                            const nTax = Number(((taxB?.current_balance || 0) + taxCalculations.tax).toFixed(2))
-                            await supabase.from('buckets').update({ current_balance: nTax }).eq('id', taxBucketId).eq('user_id', user.id)
-
-                            await supabase.from('transactions').insert([
-                                { user_id: user.id, amount: -Math.abs(taxCalculations.inps), type: 'transfer', description: `Accantonamento INPS (Fattura)`, date: new Date(date).toISOString(), bucket_id: inpsBucketId, created_at: newTx.created_at }, // Sync time
-                                { user_id: user.id, amount: -Math.abs(taxCalculations.tax), type: 'transfer', description: `Accantonamento Tasse (Fattura)`, date: new Date(date).toISOString(), bucket_id: taxBucketId, created_at: newTx.created_at }
-                            ])
+                            p_transactions_insert.push(
+                                { amount: -Math.abs(taxCalculations.inps), type: 'transfer', description: `Accantonamento INPS (Fattura)`, date: new Date(date).toISOString(), bucket_id: inpsBucketId },
+                                { amount: -Math.abs(taxCalculations.tax), type: 'transfer', description: `Accantonamento Tasse (Fattura)`, date: new Date(date).toISOString(), bucket_id: taxBucketId }
+                            )
                             distributableAmount = taxCalculations.net
                         }
 
-                        if (type === 'income' && applyAutoSplit && newTx) {
-                            await handleAutoSplitLogic(user.id, distributableAmount, new Date(date).toISOString())
+                        if (type === 'income' && applyAutoSplit) {
+                            const { inserts, bUpdates } = getAutoSplitOperations(distributableAmount, new Date(date).toISOString())
+                            p_transactions_insert.push(...inserts)
+                            p_bucket_updates.push(...bUpdates)
                         }
                     }
                 }
             }
+
+            if (p_transactions_insert.length > 0 || p_transactions_update.length > 0 || p_bucket_updates.length > 0) {
+                 const { error: rpcError } = await supabase.rpc('execute_financial_operations', {
+                     p_transactions_insert,
+                     p_transactions_update,
+                     p_transactions_delete: [],
+                     p_bucket_updates
+                 })
+                 if (rpcError) throw rpcError
+            }
+
             onSuccess()
             onClose()
-        } catch (error: any) { alert(error.message) } finally { setLoading(false) }
+        } catch (error: any) { toast.error(error.message) } finally { setLoading(false) }
     }
 
     if (!isOpen) return null
@@ -527,7 +513,7 @@ export default function TransactionForm({ isOpen, onClose, onSuccess, primaryCol
                                         <PieChart className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
                                         <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} required disabled={!!editingId && hasLinkedChildren} className={cn("w-full pl-12 pr-4 py-3.5 bg-gray-50 text-gray-900 font-medium rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white appearance-none", editingId && hasLinkedChildren && "opacity-50 cursor-not-allowed bg-gray-100")}>
                                             <option value="">Seleziona...</option>
-                                            {categories.filter(cat => cat.type === type).map((cat) => (
+                                            {categoryTree.filter(cat => cat.type === type).map((cat) => (
                                                 <>
                                                     <option key={cat.id} value={cat.id} className="font-bold text-black">{cat.name}</option>
                                                     {cat.children?.map(child => <option key={child.id} value={child.id}>&nbsp;&nbsp;&nbsp;&nbsp;{child.name}</option>)}

@@ -27,10 +27,10 @@ export default function GuidePage({ onBack, primaryColor }: GuidePageProps) {
             Benvenuto! Questa app è progettata per darti una visione completa del tuo <strong>Patrimonio Netto</strong> (Net Worth), calcolato come:
           </p>
           <div className="p-3 bg-gray-100 rounded-xl font-mono text-xs text-center font-bold text-gray-700">
-            Liquidità + Salvadanai + Investimenti
+            Liquidità + Investimenti
           </div>
           <p>
-            Ogni sezione gestisce uno di questi compartimenti. L'obiettivo è tracciare non solo le spese, ma la costruzione della tua ricchezza nel tempo.
+            I <strong>Salvadanai</strong> non sono patrimonio aggiuntivo: rappresentano liquidità "etichettata" per obiettivi specifici, e sono già inclusi nel conteggio della Liquidità.
           </p>
         </div>
       )
@@ -261,7 +261,7 @@ export default function GuidePage({ onBack, primaryColor }: GuidePageProps) {
   return (
     <div className="min-h-screen bg-gray-50 pb-24">
       {/* HEADER STICKY */}
-      <div className="bg-white sticky top-0 z-20 border-b border-gray-100 shadow-sm">
+      <div className="bg-white sticky top-0 z-20 border-b border-gray-100 shadow-sm pt-safe">
         <div className="max-w-md mx-auto px-4 py-4 flex items-center gap-3">
           <button onClick={onBack} className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors">
             <ArrowLeft className="w-6 h-6 text-gray-700" />

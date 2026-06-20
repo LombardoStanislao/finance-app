@@ -1,8 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useContext } from 'react'
 import { ArrowLeft, Plus, Trash2, X, TrendingUp, PieChart, Landmark, Bitcoin, Box, ScrollText, Settings, RefreshCw, PenLine, Loader2, BookOpen, ArrowDown, ArrowUp, History, Info, Wallet, Calculator, ArrowRightLeft, Eye, EyeOff } from 'lucide-react'
+import toast from 'react-hot-toast'
 import { supabase, type Investment, type Transaction } from '../lib/supabase'
-import { formatCurrency, formatDate, cn, calculateLiquidity } from '../lib/utils'
-import { usePrivacy } from '../context/PrivacyContext' // Import Context
+import { formatCurrency, formatDate, cn, calculateLiquidity, roundCurrency } from '../lib/utils'
+import { useAuth } from '../context/AuthContext'
+import { PrivacyContext } from '../context/PrivacyContext'
 
 interface InvestmentsPageProps {
     onBack: () => void
@@ -16,6 +18,7 @@ interface InvestmentExtended extends Investment {
 }
 
 export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, primaryColor }: InvestmentsPageProps) {
+    const { user } = useAuth()
     const [investments, setInvestments] = useState<InvestmentExtended[]>([])
     const [loading, setLoading] = useState(true)
     const [currentLiquidity, setCurrentLiquidity] = useState(0)
@@ -51,14 +54,7 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
     const [formLoading, setFormLoading] = useState(false)
 
     // HOOK PRIVACY
-    const { isPrivacyEnabled, togglePrivacy } = usePrivacy()
-
-    // HELPER PRIVACY
-    const hide = (value: number | string, isCurrency = true) => {
-        if (isPrivacyEnabled) return '****'
-        if (typeof value === 'number' && isCurrency) return formatCurrency(value)
-        return value
-    }
+    const { isPrivacyEnabled, togglePrivacy, hide } = useContext(PrivacyContext)!
 
     const supportsAutomation = ['ETF', 'Azioni', 'Crypto'].includes(formType)
 
@@ -96,20 +92,21 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
     })()
 
     useEffect(() => {
-        loadInvestments()
-        fetchLiquidity()
-        checkCooldown()
-    }, [])
+        if (user) {
+            loadInvestments()
+            fetchLiquidity()
+            checkCooldown()
+        }
+    }, [user])
 
     useEffect(() => {
         if (operationMode === 'buy_new' && calculatedPMC > 0) {
-            setFormPMC(calculatedPMC.toFixed(2))
+            setFormPMC(String(roundCurrency(calculatedPMC)))
         }
     }, [calculatedPMC, operationMode])
 
     async function fetchLiquidity() {
         try {
-            const { data: { user } } = await supabase.auth.getUser()
             if (!user) return
             const { data } = await supabase.from('transactions').select('*').eq('user_id', user.id)
             const total = calculateLiquidity(data || [])
@@ -119,7 +116,6 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
 
     async function loadInvestments() {
         try {
-            const { data: { user } } = await supabase.auth.getUser()
             if (!user) return
             const { data, error } = await supabase.from('investments').select('*').eq('user_id', user.id).order('current_value', { ascending: false })
             if (error) throw error
@@ -154,7 +150,7 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
 
     async function handleUpdatePrices() {
         if (minutesRemaining > 0) {
-            alert(`Devi aspettare ancora ${minutesRemaining} minuti prima di poter aggiornare i prezzi dei tuoi asset.`);
+            toast.error(`Devi aspettare ancora ${minutesRemaining} minuti prima di poter aggiornare i prezzi dei tuoi asset.`)
             return
         }
         setIsUpdating(true)
@@ -162,15 +158,15 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
             const { error, data } = await supabase.functions.invoke('update-prices')
             if (error) throw error
             if (data && data.message === 'Cooldown active') {
-                alert(`Limite orario attivo.`)
+                toast.error(`Limite orario attivo.`)
                 await checkCooldown()
                 return
             }
             const count = data?.updated || 0
-            alert(`Aggiornati ${count} asset.`)
+            toast.success(`Aggiornati ${count} asset.`)
             await loadInvestments()
             await checkCooldown()
-        } catch (error: any) { alert('Errore aggiornamento.') }
+        } catch (error: any) { toast.error('Errore aggiornamento.') }
         finally { setIsUpdating(false) }
     }
 
@@ -206,7 +202,6 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
         setFormLoading(true)
 
         try {
-            const { data: { user } } = await supabase.auth.getUser()
             if (!user) throw new Error('No user')
 
             const isAutomated = supportsAutomation && !isManual
@@ -402,7 +397,7 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
             resetForm()
 
         } catch (error: any) {
-            alert(error.message || 'Errore salvataggio')
+            toast.error(error.message || 'Errore salvataggio')
         } finally {
             setFormLoading(false)
         }
@@ -482,7 +477,7 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
             setIsDetailOpen(false)
             loadInvestments()
             fetchLiquidity()
-        } catch (error: any) { alert('Errore: ' + error.message) }
+        } catch (error: any) { toast.error('Errore: ' + error.message) }
     }
 
     function openDetail(inv: InvestmentExtended) {
@@ -543,7 +538,7 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
     return (
         <div className="min-h-screen bg-gray-50 pb-24">
             {/* HEADER */}
-            <div className="bg-white sticky top-0 z-20 border-b border-gray-100 shadow-sm">
+            <div className="bg-white sticky top-0 z-20 border-b border-gray-100 shadow-sm pt-safe">
                 <div className="max-w-md mx-auto px-4 py-4 flex items-center justify-between">
                     <div className="flex items-center gap-3">
                         <button onClick={onBack} className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors"><ArrowLeft className="w-6 h-6 text-gray-700" /></button>
@@ -577,7 +572,7 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
                     <div className={cn("mt-3 px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-2 border", totalPL >= 0 ? "bg-emerald-50 text-emerald-700 border-emerald-100" : "bg-rose-50 text-rose-700 border-rose-100")}>
                         {totalPL >= 0 ? <TrendingUp className="w-3.5 h-3.5" /> : <ArrowDown className="w-3.5 h-3.5" />}
                         {/* APPLICAZIONE PRIVACY AL P&L MA NON ALLA PERCENTUALE */}
-                        <span>{totalPL >= 0 ? '+' : ''}{hide(totalPL)} ({totalPLPercent.toFixed(2)}%)</span>
+                        <span>{totalPL >= 0 ? '+' : ''}{hide(totalPL)} ({roundCurrency(totalPLPercent)}%)</span>
                     </div>
                 </div>
 
@@ -628,7 +623,7 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
                                                                     </span>
                                                                     <span className={cn("text-[10px] font-bold px-1.5 py-0.5 rounded-md flex items-center gap-0.5 shadow-sm", pl >= 0 ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")}>
                                                                         {pl >= 0 ? <ArrowUp className="w-2.5 h-2.5" /> : <ArrowDown className="w-2.5 h-2.5" />}
-                                                                        {pl >= 0 ? '+' : ''}{plPerc.toFixed(2)}%
+                                                                        {pl >= 0 ? '+' : ''}{roundCurrency(plPerc)}%
                                                                     </span>
                                                                 </div>
                                                             )}
@@ -660,7 +655,6 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
                         </div>
                         <div className="space-y-3 opacity-60 hover:opacity-100 transition-opacity">
                             {closedInvestments.map(item => {
-                                const realPL = item.current_value - (item.invested_amount || 0) // Questo a storico sarà il suo P&L generato totale (sperando sia fermo e corretto)
                                 return (
                                 <div key={item.id} onClick={() => openDetail(item)} className="bg-gray-100 p-4 rounded-xl border border-gray-200 flex items-center justify-between group active:scale-[0.99] transition-transform cursor-pointer">
                                     <div className="min-w-0 pr-4">
@@ -721,7 +715,7 @@ export default function InvestmentsPage({ onBack, onOpenSettings, onOpenGuide, p
                                         <span className={cn("text-sm font-bold flex items-center gap-1", pl >= 0 ? "text-emerald-600" : "text-rose-600")}>
                                             {pl >= 0 ? <ArrowUp className="w-4 h-4" /> : <ArrowDown className="w-4 h-4" />}
                                             {/* APPLICAZIONE PRIVACY */}
-                                            {hide(pl)} ({plPerc.toFixed(2)}%)
+                                            {hide(pl)} ({roundCurrency(plPerc)}%)
                                         </span>
                                     )
                                 })()}
